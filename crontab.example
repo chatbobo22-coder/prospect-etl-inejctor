@@ -1,0 +1,3 @@
+# Executa todo domingo às 03:00. O ETL ignora arquivos já concluídos.
+0 3 * * 0 cd /opt/cnpj-etl && /usr/bin/docker compose run --rm etl run >> /var/log/cnpj-etl.log 2>&1
+

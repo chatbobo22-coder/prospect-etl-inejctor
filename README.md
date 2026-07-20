@@ -7,6 +7,24 @@ Projeto Python para descobrir a competência mais recente publicada pela Receita
 - Docker + Docker Compose (recomendado), ou Python 3.11+ e PostgreSQL 15+.
 - Espaço em disco e memória compatíveis com a base nacional. A carga completa é grande; teste primeiro com `INCLUDE_TYPES`.
 
+## Supabase
+
+Copie `.env.example` para `.env` e preencha com as credenciais do projeto. O ETL usa `DATABASE_URL`; se estiver vazio, tenta `POSTGRES_URL_NON_POOLING`, `POSTGRES_URL` ou monta a URL a partir de `POSTGRES_HOST` + `POSTGRES_PASSWORD`.
+
+Para ETL (COPY, transações longas), prefira conexão direta (`db.<ref>.supabase.co:5432`) ou o pooler em **session mode** (`pooler.supabase.com:5432`). Evite a porta 6543 (transaction mode) neste projeto.
+
+Teste a conexão:
+
+```bash
+python -m cnpj_etl.cli check-db
+```
+
+Como você já aplicou os SQLs manualmente, pode ir direto para a carga:
+
+```bash
+python -m cnpj_etl.cli run
+```
+
 ## Início rápido com Docker
 
 ```bash

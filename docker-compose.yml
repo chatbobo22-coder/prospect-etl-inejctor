@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: cnpj
+      POSTGRES_USER: cnpj
+      POSTGRES_PASSWORD: cnpj
+    ports: ["5432:5432"]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cnpj -d cnpj"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  etl:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://cnpj:cnpj@postgres:5432/cnpj
+      DATA_DIR: /data
+    volumes:
+      - rfb_data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  postgres_data:
+  rfb_data:
+

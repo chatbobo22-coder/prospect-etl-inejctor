@@ -1,0 +1,96 @@
+import logging
+
+from .loader import load_zip
+
+log = logging.getLogger(__name__)
+
+
+def run(settings, db, source, competence: str | None = None, force: bool = False):
+    competence = competence or source.latest_competence()
+    all_files = source.list_files(competence)
+    files = [
+        f for f in all_files if not settings.include_types or f.file_type in settings.include_types
+    ]
+    target = settings.data_dir / competence
+    target.mkdir(parents=True, exist_ok=True)
+
+    with db.connect() as lock_conn:
+        if not db.acquire_lock(lock_conn):
+            log.warning("Outra execução está ativa; encerrando.")
+            return 0
+        run_id = lock_conn.execute(
+            "INSERT INTO etl.runs (competence,status,files_total) VALUES (%s,'running',%s) RETURNING id",
+            (competence, len(files)),
+        ).fetchone()[0]
+        lock_conn.commit()
+        total = processed = 0
+        try:
+            for remote in files:
+                source_size, source_last_modified = source.metadata(remote)
+                existing = lock_conn.execute(
+                    "SELECT status,source_size,source_last_modified FROM etl.files "
+                    "WHERE competence=%s AND file_name=%s",
+                    (competence, remote.name),
+                ).fetchone()
+                unchanged = (
+                    existing
+                    and existing[0] == "success"
+                    and (
+                        (source_size is None or existing[1] == source_size)
+                        and (source_last_modified is None or existing[2] == source_last_modified)
+                    )
+                )
+                if unchanged and not force:
+                    log.info("Já processado: %s", remote.name)
+                    continue
+                lock_conn.execute(
+                    "INSERT INTO etl.files "
+                    "(competence,file_name,file_type,source_url,source_size,source_last_modified,status) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,'downloading') "
+                    "ON CONFLICT (competence,file_name) DO UPDATE SET "
+                    "source_size=EXCLUDED.source_size, "
+                    "source_last_modified=EXCLUDED.source_last_modified, "
+                    "status='downloading',error_message=NULL",
+                    (
+                        competence,
+                        remote.name,
+                        remote.file_type,
+                        remote.url,
+                        source_size,
+                        source_last_modified,
+                    ),
+                )
+                lock_conn.commit()
+                path = target / remote.name
+                sha256, size = source.download(remote, path, settings.download_chunk_bytes)
+                lock_conn.execute(
+                    "UPDATE etl.files SET sha256=%s,source_size=%s,downloaded_at=now(),"
+                    "status='processing' WHERE competence=%s AND file_name=%s",
+                    (sha256, size, competence, remote.name),
+                )
+                lock_conn.commit()
+                rows = load_zip(lock_conn, path, remote.file_type, competence, settings.chunk_size)
+                lock_conn.execute(
+                    "UPDATE etl.files SET status='success',rows_processed=%s,processed_at=now() WHERE competence=%s AND file_name=%s",
+                    (rows, competence, remote.name),
+                )
+                lock_conn.commit()
+                processed += 1
+                total += rows
+                log.info("Concluído %s (%s linhas)", remote.name, rows)
+            lock_conn.execute(
+                "UPDATE etl.runs SET status='success',finished_at=now(),"
+                "files_processed=%s,rows_processed=%s WHERE id=%s",
+                (processed, total, run_id),
+            )
+            lock_conn.commit()
+            return total
+        except Exception as exc:
+            lock_conn.rollback()
+            lock_conn.execute(
+                "UPDATE etl.runs SET status='failed',finished_at=now(),files_processed=%s,"
+                "rows_processed=%s,error_message=%s WHERE id=%s",
+                (processed, total, str(exc)[:4000], run_id),
+            )
+            lock_conn.commit()
+            raise

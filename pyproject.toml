@@ -1,0 +1,32 @@
+[project]
+name = "cnpj-etl"
+version = "1.0.0"
+description = "ETL idempotente dos Dados Abertos do CNPJ para PostgreSQL"
+requires-python = ">=3.11"
+dependencies = [
+  "psycopg[binary]>=3.2,<4",
+  "requests>=2.32,<3",
+  "beautifulsoup4>=4.12,<5",
+  "python-dotenv>=1.0,<2",
+  "tenacity>=9,<10",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9", "ruff>=0.9,<1"]
+
+[project.scripts]
+cnpj-etl = "cnpj_etl.cli:main"
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+
