@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import os
 import tempfile
 from contextlib import contextmanager
@@ -10,6 +11,20 @@ from xml.etree import ElementTree as ET
 import requests
 from bs4 import BeautifulSoup
 from tenacity import retry, stop_after_attempt, wait_exponential
+
+log = logging.getLogger(__name__)
+
+DOWNLOAD_LOG_EVERY_BYTES = 100 * 1024 * 1024  # 100 MB
+
+
+def fmt_bytes(num: int) -> str:
+    if num >= 1024 * 1024 * 1024:
+        return f"{num / (1024 ** 3):.1f} GB"
+    if num >= 1024 * 1024:
+        return f"{num / (1024 ** 2):.1f} MB"
+    if num >= 1024:
+        return f"{num / 1024:.1f} KB"
+    return f"{num} B"
 
 
 @dataclass(frozen=True)
@@ -186,15 +201,24 @@ class RfbSource:
         self, remote: RemoteFile, destination: str, chunk_bytes: int
     ) -> tuple[str, int]:
         digest, size = hashlib.sha256(), 0
+        last_logged = 0
         auth = (self.token, "") if self.mode == "nextcloud" else None
+        log.info("Download iniciado: %s", remote.name)
         with self._get(remote.url, stream=True, auth=auth) as response, open(
             destination, "wb"
         ) as output:
+            expected = response.headers.get("Content-Length")
+            if expected and expected.isdigit():
+                log.info("Download %s: tamanho esperado %s", remote.name, fmt_bytes(int(expected)))
             for chunk in response.iter_content(chunk_size=chunk_bytes):
                 if chunk:
                     output.write(chunk)
                     digest.update(chunk)
                     size += len(chunk)
+                    if size - last_logged >= DOWNLOAD_LOG_EVERY_BYTES:
+                        log.info("Download %s: %s recebidos", remote.name, fmt_bytes(size))
+                        last_logged = size
+        log.info("Download concluído: %s (%s)", remote.name, fmt_bytes(size))
         return digest.hexdigest(), size
 
     def download(self, remote: RemoteFile, destination, chunk_bytes: int) -> tuple[str, int]:

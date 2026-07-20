@@ -3,8 +3,13 @@ from dataclasses import replace
 
 from .filters import FILE_LOAD_ORDER, FilterContext
 from .loader import load_zip
+from .source import fmt_bytes
 
 log = logging.getLogger(__name__)
+
+
+def _fmt_remote_size(size: int | None) -> str:
+    return fmt_bytes(size) if size else "tamanho desconhecido"
 
 
 def prepare_run_settings(settings, db, auto_bootstrap: bool = False):
@@ -70,9 +75,18 @@ def run(
         ).fetchone()[0]
         lock_conn.commit()
         total = processed = 0
+        file_total = len(files)
         try:
-            for remote in files:
+            for index, remote in enumerate(files, start=1):
                 source_size, source_last_modified = source.metadata(remote)
+                log.info(
+                    "[%s/%s] %s (%s) — remoto %s",
+                    index,
+                    file_total,
+                    remote.name,
+                    remote.file_type,
+                    _fmt_remote_size(source_size),
+                )
                 existing = lock_conn.execute(
                     "SELECT status,source_size,source_last_modified FROM etl.files "
                     "WHERE competence=%s AND file_name=%s",
@@ -109,6 +123,12 @@ def run(
                 lock_conn.commit()
 
                 def ingest(path, sha256, size):
+                    log.info(
+                        "Processando %s (%s baixados, sha256=%s…)",
+                        remote.name,
+                        fmt_bytes(size),
+                        sha256[:12],
+                    )
                     lock_conn.execute(
                         "UPDATE etl.files SET sha256=%s,source_size=%s,downloaded_at=now(),"
                         "status='processing' WHERE competence=%s AND file_name=%s",
@@ -123,8 +143,10 @@ def run(
                         settings.chunk_size,
                         label=remote.name,
                         filter_ctx=filter_ctx,
+                        log_progress_every=settings.log_progress_every,
                     )
 
+                log.info("Baixando %s …", remote.name)
                 if settings.keep_downloads:
                     path = settings.data_dir / competence / remote.name
                     sha256, size = source.download(remote, path, settings.download_chunk_bytes)

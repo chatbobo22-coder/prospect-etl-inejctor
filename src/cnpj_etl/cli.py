@@ -1,5 +1,6 @@
 import argparse
 import logging
+import os
 from pathlib import Path
 
 from .config import Settings
@@ -22,7 +23,11 @@ def main():
         help="Carga completa se a base estiver vazia; senão sincronização incremental",
     )
     args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logging.basicConfig(
+        level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        force=True,
+    )
     settings, db = Settings(), Database(Settings().database_url)
     sql_dir = Path(__file__).resolve().parents[2] / "sql"
     if args.command == "check-db":

@@ -51,7 +51,24 @@ def transform(kind: str, row: list[str], columns: list[str], competence: str):
     return item
 
 
-def upsert_chunk(conn, table: str, rows: list[dict], conflict: str):
+def describe_row(kind: str, item: dict) -> str:
+    if kind == "Estabelecimentos":
+        return (
+            f"cnpj={item.get('cnpj')} uf={item.get('uf')} "
+            f"cnae={item.get('cnae_fiscal_principal')} fantasia={item.get('nome_fantasia')!r}"
+        )
+    if kind == "Empresas":
+        return f"cnpj_basico={item.get('cnpj_basico')} razao={item.get('razao_social')!r} capital={item.get('capital_social')}"
+    if kind == "Socios":
+        return f"cnpj_basico={item.get('cnpj_basico')} socio={item.get('nome_socio_razao_social')!r}"
+    if kind == "Simples":
+        return f"cnpj_basico={item.get('cnpj_basico')} simples={item.get('opcao_simples')} mei={item.get('opcao_mei')}"
+    if kind == "Cnaes":
+        return f"{item.get('codigo')}={item.get('descricao')!r}"
+    return str(item.get("codigo") or item.get("cnpj_basico") or item.get("cnpj") or "")[:120]
+
+
+def upsert_chunk(conn, table: str, rows: list[dict], conflict: str, *, kind: str = "", label: str = ""):
     if not rows:
         return
     columns = list(rows[0])
@@ -103,6 +120,14 @@ def upsert_chunk(conn, table: str, rows: list[dict], conflict: str):
     )
     conn.execute(stmt)
     conn.execute(sql.SQL("DROP TABLE {}").format(sql.Identifier(temp)))
+    if kind and label:
+        log.info(
+            "%s → cnpj.%s: lote %s registros gravados (ex: %s)",
+            label,
+            table,
+            len(rows),
+            describe_row(kind, rows[-1]),
+        )
 
 
 def load_zip(
@@ -114,6 +139,7 @@ def load_zip(
     *,
     label: str | None = None,
     filter_ctx=None,
+    log_progress_every: int = 50000,
 ) -> int:
     table, columns = DATASETS[kind]
     conflict = (
@@ -126,30 +152,54 @@ def load_zip(
         else "codigo"
     )
     display_name = label or getattr(zip_path, "name", str(zip_path))
-    count, skipped, chunk = 0, 0, []
+    count = skipped = scanned = 0
+    chunk: list[dict] = []
+    log.info("%s: iniciando leitura (%s → cnpj.%s)", display_name, kind, table)
     with ZipFile(zip_path) as archive:
         members = [n for n in archive.namelist() if not n.endswith("/")]
         if not members:
             raise RuntimeError(f"ZIP vazio: {display_name}")
+        inner = members[0]
+        log.info("%s: arquivo interno %s", display_name, inner)
         with (
-            archive.open(members[0]) as raw,
+            archive.open(inner) as raw,
             io.TextIOWrapper(raw, encoding="latin-1", newline="") as text,
         ):
             for row in csv.reader(text, delimiter=";", quotechar='"'):
+                scanned += 1
                 item = transform(kind, row, columns, competence)
                 if not should_load_row(kind, item, filter_ctx):
                     skipped += 1
-                    continue
-                if kind == "Estabelecimentos" and filter_ctx:
-                    track_estabelecimento(item, filter_ctx)
-                chunk.append(item)
-                if len(chunk) >= chunk_size:
-                    upsert_chunk(conn, table, chunk, conflict)
-                    count += len(chunk)
-                    chunk.clear()
-                    log.info("%s: %s linhas (%s ignoradas)", display_name, count, skipped)
-            upsert_chunk(conn, table, chunk, conflict)
-            count += len(chunk)
-    if skipped:
-        log.info("%s: total %s linhas salvas, %s ignoradas pelo filtro", display_name, count, skipped)
+                else:
+                    if kind == "Estabelecimentos" and filter_ctx:
+                        track_estabelecimento(item, filter_ctx)
+                    chunk.append(item)
+                    if len(chunk) >= chunk_size:
+                        upsert_chunk(
+                            conn, table, chunk, conflict, kind=kind, label=display_name
+                        )
+                        count += len(chunk)
+                        chunk.clear()
+                if scanned % log_progress_every == 0:
+                    matched = count + len(chunk)
+                    pct = (matched / scanned * 100) if scanned else 0
+                    log.info(
+                        "%s: lidas=%s | gravadas=%s | ignoradas=%s | taxa=%.2f%%",
+                        display_name,
+                        scanned,
+                        matched,
+                        skipped,
+                        pct,
+                    )
+            if chunk:
+                upsert_chunk(conn, table, chunk, conflict, kind=kind, label=display_name)
+                count += len(chunk)
+    log.info(
+        "%s: concluído — lidas=%s gravadas=%s ignoradas=%s empresas_unicas=%s",
+        display_name,
+        scanned,
+        count,
+        skipped,
+        len(filter_ctx.matched_basics) if filter_ctx else "-",
+    )
     return count
