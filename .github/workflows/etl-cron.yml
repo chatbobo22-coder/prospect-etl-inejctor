@@ -24,7 +24,6 @@ jobs:
   etl:
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    environment: Production – prospect-etl-inejctor-tironitech
 
     steps:
       - name: Checkout
@@ -37,12 +36,12 @@ jobs:
         run: |
           if [ -n "${SECRET_DATABASE_URL:-}" ]; then
             echo "DATABASE_URL=${SECRET_DATABASE_URL}" >> "$GITHUB_ENV"
-            echo "Environment secret DATABASE_URL OK."
+            echo "Repository secret DATABASE_URL OK."
           elif [ -n "${VAR_DATABASE_URL:-}" ]; then
             echo "DATABASE_URL=${VAR_DATABASE_URL}" >> "$GITHUB_ENV"
-            echo "Environment variable DATABASE_URL OK."
+            echo "Repository variable DATABASE_URL OK."
           else
-            echo "::error::DATABASE_URL não encontrado no environment Production – prospect-etl-inejctor-tironitech."
+            echo "::error::DATABASE_URL não encontrado em Repository secrets/variables."
             exit 1
           fi
 
