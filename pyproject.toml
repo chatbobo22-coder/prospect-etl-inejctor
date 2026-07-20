@@ -9,6 +9,7 @@ dependencies = [
   "beautifulsoup4>=4.12,<5",
   "python-dotenv>=1.0,<2",
   "tenacity>=9,<10",
+  "fastapi>=0.117,<1",
 ]
 
 [project.optional-dependencies]
@@ -26,6 +27,9 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+
+[tool.vercel]
+entrypoint = "app:app"
 
 [tool.ruff]
 line-length = 100

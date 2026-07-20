@@ -11,7 +11,7 @@ Projeto Python para descobrir a competência mais recente publicada pela Receita
 
 Copie `.env.example` para `.env` e preencha com as credenciais do projeto. O ETL usa `DATABASE_URL`; se estiver vazio, tenta `POSTGRES_URL_NON_POOLING`, `POSTGRES_URL` ou monta a URL a partir de `POSTGRES_HOST` + `POSTGRES_PASSWORD`.
 
-Para ETL (COPY, transações longas), prefira conexão direta (`db.<ref>.supabase.co:5432`) ou o pooler em **session mode** (`pooler.supabase.com:5432`). Evite a porta 6543 (transaction mode) neste projeto.
+Para ETL local/cron (COPY, transações longas), use conexão direta ou pooler **session mode** (porta 5432). No **Vercel**, use pooler **transaction mode** (porta 6543).
 
 Teste a conexão:
 
@@ -24,6 +24,24 @@ Como você já aplicou os SQLs manualmente, pode ir direto para a carga:
 ```bash
 python -m cnpj_etl.cli run
 ```
+
+## Vercel
+
+O deploy expõe uma API FastAPI (`app.py`) com health check e status do banco. A carga pesada (`cnpj-etl run`) **não roda no Vercel** — use local, Docker, Render Cron ou similar.
+
+Variáveis obrigatórias no painel do Vercel:
+
+```env
+DATABASE_URL=postgres://postgres.SEU_PROJECT_REF:SEU_PASSWORD@aws-0-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require
+```
+
+Endpoints após o deploy:
+
+- `/` — info da API
+- `/api/health` — health check
+- `/api/db` — testa conexão PostgreSQL
+- `/api/runs` — últimas execuções do ETL
+- `/docs` — Swagger
 
 ## Início rápido com Docker
 
