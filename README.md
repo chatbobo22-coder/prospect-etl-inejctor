@@ -43,6 +43,37 @@ Endpoints após o deploy:
 - `/api/runs` — últimas execuções do ETL
 - `/docs` — Swagger
 
+## GitHub Actions (agendamento)
+
+O workflow `.github/workflows/etl-cron.yml` executa o ETL automaticamente **todo domingo às 03:00 (horário de Brasília)** e também pode ser disparado manualmente.
+
+### Configurar secrets
+
+No GitHub: **Settings → Secrets and variables → Actions → New repository secret**
+
+| Secret | Obrigatório | Valor |
+|--------|-------------|--------|
+| `DATABASE_URL` | Sim | Pooler session mode (porta **5432**), ex.: `postgres://postgres.SEU_PROJECT_REF:SENHA@aws-0-us-east-1.pooler.supabase.com:5432/postgres?sslmode=require` |
+| `INCLUDE_TYPES` | Não | Limita tipos no primeiro teste, ex.: `Municipios,Cnaes,Naturezas,Qualificacoes,Motivos,Paises` |
+
+### Rodar manualmente
+
+**Actions → CNPJ ETL → Run workflow**
+
+Parâmetros opcionais: competência (`YYYY-MM`) e `force` para reprocessar arquivos.
+
+### Confirmar que está rodando
+
+1. **GitHub:** Actions → workflow *CNPJ ETL* → histórico verde/vermelho
+2. **Supabase SQL:**
+   ```sql
+   SELECT id, competence, status, started_at, finished_at
+   FROM etl.runs ORDER BY started_at DESC LIMIT 10;
+   ```
+3. **API Vercel:** `GET /api/runs`
+
+Para mudar a frequência, edite o cron em `.github/workflows/etl-cron.yml` (ex.: `"0 * * * *"` = a cada hora).
+
 ## Início rápido com Docker
 
 ```bash

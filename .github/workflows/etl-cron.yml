@@ -1,0 +1,60 @@
+name: CNPJ ETL
+
+on:
+  schedule:
+    # Domingo 06:00 UTC = 03:00 horário de Brasília
+    - cron: "0 6 * * 0"
+  workflow_dispatch:
+    inputs:
+      competence:
+        description: "Competência YYYY-MM (vazio = mais recente)"
+        required: false
+        type: string
+      force:
+        description: "Reprocessar arquivos já concluídos"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: cnpj-etl
+  cancel-in-progress: false
+
+jobs:
+  etl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install .
+
+      - name: Check database connection
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python -m cnpj_etl.cli check-db
+
+      - name: Run ETL
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATA_DIR: ${{ github.workspace }}/data
+          # Opcional: defina INCLUDE_TYPES nos secrets para limitar a carga
+          INCLUDE_TYPES: ${{ secrets.INCLUDE_TYPES }}
+        run: |
+          args=""
+          if [ -n "${{ inputs.competence }}" ]; then
+            args="$args --competence ${{ inputs.competence }}"
+          fi
+          if [ "${{ inputs.force }}" = "true" ]; then
+            args="$args --force"
+          fi
+          python -m cnpj_etl.cli run $args
