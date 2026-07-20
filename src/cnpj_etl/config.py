@@ -51,3 +51,9 @@ class Settings:
     include_types: frozenset[str] = frozenset(
         filter(None, os.getenv("INCLUDE_TYPES", "").split(","))
     )
+    keep_downloads: bool = os.getenv("KEEP_DOWNLOADS", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }

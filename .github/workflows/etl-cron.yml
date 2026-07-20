@@ -46,7 +46,7 @@ jobs:
       - name: Run ETL
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          DATA_DIR: ${{ github.workspace }}/data
+          KEEP_DOWNLOADS: "false"
         run: |
           args="--auto"
           if [ -n "${{ inputs.competence }}" ]; then

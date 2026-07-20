@@ -1,3 +1,7 @@
+import hashlib
+import os
+import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 import re
 from urllib.parse import urljoin
@@ -178,17 +182,34 @@ class RfbSource:
             response.headers.get("Last-Modified"),
         )
 
-    def download(self, remote: RemoteFile, destination, chunk_bytes: int) -> tuple[str, int]:
-        import hashlib
-
-        temporary = destination.with_suffix(destination.suffix + ".part")
+    def _download_to_path(
+        self, remote: RemoteFile, destination: str, chunk_bytes: int
+    ) -> tuple[str, int]:
         digest, size = hashlib.sha256(), 0
         auth = (self.token, "") if self.mode == "nextcloud" else None
-        with self._get(remote.url, stream=True, auth=auth) as response, temporary.open("wb") as output:
+        with self._get(remote.url, stream=True, auth=auth) as response, open(
+            destination, "wb"
+        ) as output:
             for chunk in response.iter_content(chunk_size=chunk_bytes):
                 if chunk:
                     output.write(chunk)
                     digest.update(chunk)
                     size += len(chunk)
-        temporary.replace(destination)
         return digest.hexdigest(), size
+
+    def download(self, remote: RemoteFile, destination, chunk_bytes: int) -> tuple[str, int]:
+        temporary = destination.with_suffix(destination.suffix + ".part")
+        sha256, size = self._download_to_path(remote, temporary, chunk_bytes)
+        temporary.replace(destination)
+        return sha256, size
+
+    @contextmanager
+    def temporary_download(self, remote: RemoteFile, chunk_bytes: int):
+        fd, path = tempfile.mkstemp(prefix="cnpj-etl-", suffix=".zip")
+        os.close(fd)
+        try:
+            sha256, size = self._download_to_path(remote, path, chunk_bytes)
+            yield path, sha256, size
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)

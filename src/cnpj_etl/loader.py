@@ -104,7 +104,9 @@ def upsert_chunk(conn, table: str, rows: list[dict], conflict: str):
     conn.execute(sql.SQL("DROP TABLE {}").format(sql.Identifier(temp)))
 
 
-def load_zip(conn, zip_path, kind: str, competence: str, chunk_size: int) -> int:
+def load_zip(
+    conn, zip_path, kind: str, competence: str, chunk_size: int, *, label: str | None = None
+) -> int:
     table, columns = DATASETS[kind]
     conflict = (
         "cnpj"
@@ -115,11 +117,12 @@ def load_zip(conn, zip_path, kind: str, competence: str, chunk_size: int) -> int
         if kind in {"Empresas", "Simples"}
         else "codigo"
     )
+    display_name = label or getattr(zip_path, "name", str(zip_path))
     count, chunk = 0, []
     with ZipFile(zip_path) as archive:
         members = [n for n in archive.namelist() if not n.endswith("/")]
         if not members:
-            raise RuntimeError(f"ZIP vazio: {zip_path}")
+            raise RuntimeError(f"ZIP vazio: {display_name}")
         with (
             archive.open(members[0]) as raw,
             io.TextIOWrapper(raw, encoding="latin-1", newline="") as text,
@@ -130,7 +133,7 @@ def load_zip(conn, zip_path, kind: str, competence: str, chunk_size: int) -> int
                     upsert_chunk(conn, table, chunk, conflict)
                     count += len(chunk)
                     chunk.clear()
-                    log.info("%s: %s linhas", zip_path.name, count)
+                    log.info("%s: %s linhas", display_name, count)
             upsert_chunk(conn, table, chunk, conflict)
             count += len(chunk)
     return count

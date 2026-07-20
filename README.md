@@ -6,6 +6,7 @@ Projeto Python para descobrir a competência mais recente publicada pela Receita
 
 - Docker + Docker Compose (recomendado), ou Python 3.11+ e PostgreSQL 15+.
 - Espaço em disco e memória compatíveis com a base nacional. A carga completa é grande; teste primeiro com `INCLUDE_TYPES`.
+- Por padrão (`KEEP_DOWNLOADS=false`), cada ZIP é baixado para um arquivo temporário, carregado no PostgreSQL e apagado — nada fica em `data/`.
 
 ## Supabase
 

@@ -31,8 +31,9 @@ def run(
     files = [
         f for f in all_files if not settings.include_types or f.file_type in settings.include_types
     ]
-    target = settings.data_dir / competence
-    target.mkdir(parents=True, exist_ok=True)
+    if settings.keep_downloads:
+        target = settings.data_dir / competence
+        target.mkdir(parents=True, exist_ok=True)
 
     with db.connect() as lock_conn:
         if not db.acquire_lock(lock_conn):
@@ -81,15 +82,33 @@ def run(
                     ),
                 )
                 lock_conn.commit()
-                path = target / remote.name
-                sha256, size = source.download(remote, path, settings.download_chunk_bytes)
-                lock_conn.execute(
-                    "UPDATE etl.files SET sha256=%s,source_size=%s,downloaded_at=now(),"
-                    "status='processing' WHERE competence=%s AND file_name=%s",
-                    (sha256, size, competence, remote.name),
-                )
-                lock_conn.commit()
-                rows = load_zip(lock_conn, path, remote.file_type, competence, settings.chunk_size)
+
+                def ingest(path, sha256, size):
+                    lock_conn.execute(
+                        "UPDATE etl.files SET sha256=%s,source_size=%s,downloaded_at=now(),"
+                        "status='processing' WHERE competence=%s AND file_name=%s",
+                        (sha256, size, competence, remote.name),
+                    )
+                    lock_conn.commit()
+                    return load_zip(
+                        lock_conn,
+                        path,
+                        remote.file_type,
+                        competence,
+                        settings.chunk_size,
+                        label=remote.name,
+                    )
+
+                if settings.keep_downloads:
+                    path = settings.data_dir / competence / remote.name
+                    sha256, size = source.download(remote, path, settings.download_chunk_bytes)
+                    rows = ingest(path, sha256, size)
+                else:
+                    with source.temporary_download(
+                        remote, settings.download_chunk_bytes
+                    ) as (path, sha256, size):
+                        rows = ingest(path, sha256, size)
+
                 lock_conn.execute(
                     "UPDATE etl.files SET status='success',rows_processed=%s,processed_at=now() WHERE competence=%s AND file_name=%s",
                     (rows, competence, remote.name),
