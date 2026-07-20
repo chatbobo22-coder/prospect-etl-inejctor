@@ -1,11 +1,31 @@
 import logging
+from dataclasses import replace
 
 from .loader import load_zip
 
 log = logging.getLogger(__name__)
 
 
-def run(settings, db, source, competence: str | None = None, force: bool = False):
+def prepare_run_settings(settings, db, auto_bootstrap: bool = False):
+    if not auto_bootstrap:
+        return settings, False
+    with db.connect() as conn:
+        if db.needs_initial_load(conn):
+            log.info("Base vazia detectada — iniciando primeira carga completa (todos os tipos)")
+            return replace(settings, include_types=frozenset()), True
+    log.info("Base já populada — sincronização incremental (apenas arquivos novos ou alterados)")
+    return settings, False
+
+
+def run(
+    settings,
+    db,
+    source,
+    competence: str | None = None,
+    force: bool = False,
+    auto_bootstrap: bool = False,
+):
+    settings, _ = prepare_run_settings(settings, db, auto_bootstrap)
     competence = competence or source.latest_competence()
     all_files = source.list_files(competence)
     files = [

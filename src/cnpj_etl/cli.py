@@ -16,6 +16,11 @@ def main():
     execute = sub.add_parser("run", help="Executa uma sincronização")
     execute.add_argument("--competence", help="Competência YYYY-MM; padrão: mais recente")
     execute.add_argument("--force", action="store_true", help="Reprocessa arquivos concluídos")
+    execute.add_argument(
+        "--auto",
+        action="store_true",
+        help="Carga completa se a base estiver vazia; senão sincronização incremental",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     settings, db = Settings(), Database(Settings().database_url)
@@ -33,6 +38,7 @@ def main():
             RfbSource(settings.base_url, settings.timeout),
             args.competence,
             args.force,
+            args.auto,
         )
 
 

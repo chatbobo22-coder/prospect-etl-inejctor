@@ -2,8 +2,8 @@ name: CNPJ ETL
 
 on:
   schedule:
-    # Domingo 06:00 UTC = 03:00 horário de Brasília
-    - cron: "0 6 * * 0"
+    # A cada hora, no minuto 0 (UTC)
+    - cron: "0 * * * *"
   workflow_dispatch:
     inputs:
       competence:
@@ -47,10 +47,8 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DATA_DIR: ${{ github.workspace }}/data
-          # Opcional: defina INCLUDE_TYPES nos secrets para limitar a carga
-          INCLUDE_TYPES: ${{ secrets.INCLUDE_TYPES }}
         run: |
-          args=""
+          args="--auto"
           if [ -n "${{ inputs.competence }}" ]; then
             args="$args --competence ${{ inputs.competence }}"
           fi

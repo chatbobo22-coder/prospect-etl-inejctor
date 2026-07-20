@@ -13,6 +13,12 @@ class Database:
         with self.connect() as conn:
             return conn.execute("SELECT current_database(), version()").fetchone()[0]
 
+    def needs_initial_load(self, conn) -> bool:
+        return not conn.execute(
+            "SELECT EXISTS (SELECT 1 FROM cnpj.empresas LIMIT 1) "
+            "OR EXISTS (SELECT 1 FROM cnpj.estabelecimentos LIMIT 1)"
+        ).fetchone()[0]
+
     def migrate(self, sql_dir: Path):
         with self.connect() as conn:
             for path in sorted(sql_dir.glob("*.sql")):

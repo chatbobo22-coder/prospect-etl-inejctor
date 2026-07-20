@@ -45,7 +45,12 @@ Endpoints após o deploy:
 
 ## GitHub Actions (agendamento)
 
-O workflow `.github/workflows/etl-cron.yml` executa o ETL automaticamente **todo domingo às 03:00 (horário de Brasília)** e também pode ser disparado manualmente.
+O workflow `.github/workflows/etl-cron.yml` executa o ETL **de hora em hora** com `--auto`:
+
+- **Base vazia** (`cnpj.empresas` e `cnpj.estabelecimentos` sem dados): primeira carga **completa**, todos os tipos de arquivo.
+- **Base já populada**: sincronização incremental — processa só arquivos novos ou alterados; ignora os já concluídos em `etl.files`.
+
+Se uma execução falhar no meio, a próxima retoma de onde parou (arquivos com `success` são pulados).
 
 ### Configurar secrets
 
@@ -54,25 +59,26 @@ No GitHub: **Settings → Secrets and variables → Actions → New repository s
 | Secret | Obrigatório | Valor |
 |--------|-------------|--------|
 | `DATABASE_URL` | Sim | Pooler session mode (porta **5432**), ex.: `postgres://postgres.SEU_PROJECT_REF:SENHA@aws-0-us-east-1.pooler.supabase.com:5432/postgres?sslmode=require` |
-| `INCLUDE_TYPES` | Não | Limita tipos no primeiro teste, ex.: `Municipios,Cnaes,Naturezas,Qualificacoes,Motivos,Paises` |
 
 ### Rodar manualmente
 
 **Actions → CNPJ ETL → Run workflow**
 
-Parâmetros opcionais: competência (`YYYY-MM`) e `force` para reprocessar arquivos.
+Usa `--auto` por padrão. Parâmetros opcionais: competência (`YYYY-MM`) e `force`.
 
 ### Confirmar que está rodando
 
-1. **GitHub:** Actions → workflow *CNPJ ETL* → histórico verde/vermelho
+1. **GitHub:** Actions → workflow *CNPJ ETL* → execuções a cada hora
 2. **Supabase SQL:**
    ```sql
-   SELECT id, competence, status, started_at, finished_at
+   SELECT id, competence, status, started_at, finished_at, files_processed, rows_processed
    FROM etl.runs ORDER BY started_at DESC LIMIT 10;
    ```
 3. **API Vercel:** `GET /api/runs`
 
-Para mudar a frequência, edite o cron em `.github/workflows/etl-cron.yml` (ex.: `"0 * * * *"` = a cada hora).
+### Limitações do GitHub Actions
+
+A primeira carga completa da base nacional é **muito grande** (dezenas de GB em ZIPs). O runner do GitHub tem ~14 GB de disco e timeout de 6 h — pode falhar na carga inicial. Se isso ocorrer, rode a primeira carga localmente ou em um VPS com `python -m cnpj_etl.cli run --auto` e deixe o GitHub cuidar das sincronizações horárias depois.
 
 ## Início rápido com Docker
 
