@@ -11,17 +11,20 @@ load_dotenv()
 
 
 def _env_flag(name: str, default: str = "false") -> bool:
-    return os.getenv(name, default).lower() in {"1", "true", "yes", "on"}
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        raw = default
+    return raw.lower() in {"1", "true", "yes", "on"}
 
 
 def _parse_filter_cnaes() -> frozenset[str]:
     if _env_flag("DISABLE_FILTERS"):
         return frozenset()
     raw = os.getenv("FILTER_CNAES")
-    if raw is None:
+    if raw is None or not raw.strip():
         return DEFAULT_FILTER_CNAES
     raw = raw.strip()
-    if not raw or raw.lower() in {"none", "off", "false"}:
+    if raw.lower() in {"none", "off", "false", "*", "all"}:
         return frozenset()
     return frozenset(
         normalized

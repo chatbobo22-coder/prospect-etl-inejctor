@@ -60,11 +60,18 @@ jobs:
       - name: Run ETL
         env:
           KEEP_DOWNLOADS: "false"
-          FILTER_UF: ${{ vars.FILTER_UF }}
-          FILTER_CNAES: ${{ vars.FILTER_CNAES }}
-          FILTER_ACTIVE_ONLY: ${{ vars.FILTER_ACTIVE_ONLY }}
-          FILTER_CNAE_INCLUDE_SECONDARY: ${{ vars.FILTER_CNAE_INCLUDE_SECONDARY }}
         run: |
+          for key in FILTER_UF FILTER_CNAES FILTER_ACTIVE_ONLY FILTER_CNAE_INCLUDE_SECONDARY; do
+            case "$key" in
+              FILTER_UF) val="${{ vars.FILTER_UF }}" ;;
+              FILTER_CNAES) val="${{ vars.FILTER_CNAES }}" ;;
+              FILTER_ACTIVE_ONLY) val="${{ vars.FILTER_ACTIVE_ONLY }}" ;;
+              FILTER_CNAE_INCLUDE_SECONDARY) val="${{ vars.FILTER_CNAE_INCLUDE_SECONDARY }}" ;;
+            esac
+            if [ -n "${val:-}" ]; then
+              echo "$key=$val" >> "$GITHUB_ENV"
+            fi
+          done
           args="--auto"
           if [ -n "${{ inputs.competence }}" ]; then
             args="$args --competence ${{ inputs.competence }}"
