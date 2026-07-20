@@ -24,29 +24,37 @@ jobs:
   etl:
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    env:
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate DATABASE_URL secret
+      - name: Load DATABASE_URL from secrets
+        env:
+          SECRET_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SECRET_POSTGRES_URL_NON_POOLING: ${{ secrets.POSTGRES_URL_NON_POOLING }}
+          SECRET_POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
         run: |
-          if [ -z "${DATABASE_URL:-}" ]; then
-            echo "::error::Secret DATABASE_URL ausente. Configure em Settings → Secrets and variables → Actions."
+          if [ -n "${SECRET_DATABASE_URL:-}" ]; then
+            echo "DATABASE_URL=${SECRET_DATABASE_URL}" >> "$GITHUB_ENV"
+            echo "Secret DATABASE_URL encontrado."
+          elif [ -n "${SECRET_POSTGRES_URL_NON_POOLING:-}" ]; then
+            echo "DATABASE_URL=${SECRET_POSTGRES_URL_NON_POOLING}" >> "$GITHUB_ENV"
+            echo "Secret POSTGRES_URL_NON_POOLING encontrado."
+          elif [ -n "${SECRET_POSTGRES_URL:-}" ]; then
+            echo "DATABASE_URL=${SECRET_POSTGRES_URL}" >> "$GITHUB_ENV"
+            echo "Secret POSTGRES_URL encontrado."
+          else
+            echo "::error::Nenhum secret de banco encontrado."
+            echo "::error::Crie em Repository secrets (aba Repository secrets, NÃO Environment):"
+            echo "::error::  https://github.com/chatbobo22-coder/prospect-etl-inejctor/settings/secrets/actions"
+            echo "::error::Nome recomendado: DATABASE_URL"
             exit 1
           fi
-          case "$DATABASE_URL" in
+          case "${DATABASE_URL:-}" in
             *localhost*|*127.0.0.1*)
-              echo "::error::DATABASE_URL aponta para localhost. Use a URL do Supabase (pooler, porta 5432)."
+              echo "::error::URL aponta para localhost. Use o Supabase (pooler, porta 5432)."
               exit 1
-              ;;
-            *supabase.co*)
-              echo "DATABASE_URL configurado (Supabase)."
-              ;;
-            *)
-              echo "DATABASE_URL configurado."
               ;;
           esac
 
