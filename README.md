@@ -55,11 +55,28 @@ Se uma execução falhar no meio, a próxima retoma de onde parou (arquivos com 
 
 ### Configurar secrets
 
-No GitHub: **Settings → Secrets and variables → Actions → New repository secret**
+No GitHub, abra o repositório **prospect-etl-inejctor** (não a conta pessoal):
 
-| Secret | Obrigatório | Valor |
-|--------|-------------|--------|
-| `DATABASE_URL` | Sim | Pooler session mode (porta **5432**), ex.: `postgres://postgres.SEU_PROJECT_REF:SENHA@aws-0-us-east-1.pooler.supabase.com:5432/postgres?sslmode=require` |
+**Settings → Secrets and variables → Actions → Repository secrets → New repository secret**
+
+| Campo | Valor |
+|-------|--------|
+| **Name** | `DATABASE_URL` (exatamente assim, maiúsculas) |
+| **Secret** | URL do Supabase com porta **5432** |
+
+Exemplo (substitua pela sua senha):
+
+```text
+postgres://postgres.bpufnefrqhychqjzkgqz:43SWXaMjEkEFZGT5@aws-0-us-east-1.pooler.supabase.com:5432/postgres?sslmode=require
+```
+
+Erros comuns:
+
+- Secret criado em **Environment secrets** em vez de **Repository secrets**
+- Nome errado (`Database_URL`, `POSTGRES_URL`, etc.)
+- URL com `localhost` ou sem o host do Supabase
+
+Depois de salvar, rode **Actions → CNPJ ETL → Run workflow** de novo.
 
 ### Rodar manualmente
 

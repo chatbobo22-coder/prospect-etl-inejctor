@@ -17,12 +17,12 @@ def _normalize_database_url(url: str) -> str:
 
 
 def resolve_database_url() -> str:
-    explicit = os.getenv("DATABASE_URL")
+    explicit = os.getenv("DATABASE_URL", "").strip()
     if explicit:
         return _normalize_database_url(explicit)
 
     for key in ("POSTGRES_URL_NON_POOLING", "POSTGRES_URL", "POSTGRES_PRISMA_URL"):
-        url = os.getenv(key)
+        url = os.getenv(key, "").strip()
         if url:
             return _normalize_database_url(url)
 
@@ -33,6 +33,12 @@ def resolve_database_url() -> str:
         database = os.getenv("POSTGRES_DATABASE", "postgres")
         user_info = f"{quote(user, safe='')}:{quote(password, safe='')}"
         return f"postgresql://{user_info}@{host}:5432/{database}?sslmode=require"
+
+    if os.getenv("GITHUB_ACTIONS") == "true":
+        raise RuntimeError(
+            "DATABASE_URL não configurado no GitHub Actions. "
+            "Adicione em Settings → Secrets and variables → Actions → New repository secret."
+        )
 
     return "postgresql://cnpj:cnpj@localhost:5432/cnpj"
 
