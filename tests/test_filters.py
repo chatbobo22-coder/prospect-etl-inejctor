@@ -24,8 +24,22 @@ def test_inactive_rejected():
     assert not matches_estabelecimento(item, ctx)
 
 
-def test_secondary_cnae_match():
+def test_secondary_cnae_rejected_by_default():
     ctx = FilterContext(frozenset(["4781400"]), active_only=True)
+    item = {
+        "situacao_cadastral": "02",
+        "cnae_fiscal_principal": "1234567",
+        "cnaes_fiscais_secundarios": "1111111,4781400",
+    }
+    assert not matches_estabelecimento(item, ctx)
+
+
+def test_secondary_cnae_match_when_enabled():
+    ctx = FilterContext(
+        frozenset(["4781400"]),
+        active_only=True,
+        include_secondary_cnae=True,
+    )
     item = {
         "situacao_cadastral": "02",
         "cnae_fiscal_principal": "1234567",
@@ -55,3 +69,27 @@ def test_uf_filter():
 
 def test_default_cnaes_count():
     assert len(DEFAULT_FILTER_CNAES) == 18
+
+
+def test_default_cnaes_match_user_list():
+    expected = {
+        "4791201",
+        "4781400",
+        "4782201",
+        "4782202",
+        "4783101",
+        "4783102",
+        "4772500",
+        "4763601",
+        "4763602",
+        "4755503",
+        "4754701",
+        "4753900",
+        "4751201",
+        "4752100",
+        "4789001",
+        "4759899",
+        "4530703",
+        "4744099",
+    }
+    assert DEFAULT_FILTER_CNAES == frozenset(expected)

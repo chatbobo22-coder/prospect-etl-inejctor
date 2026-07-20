@@ -2,26 +2,30 @@
 
 from dataclasses import dataclass, field
 
-# Comércio varejista — segmento solicitado
-DEFAULT_FILTER_CNAES = (
-    "4791201",
-    "4781400",
-    "4782201",
-    "4782202",
-    "4783101",
-    "4783102",
-    "4772500",
-    "4763601",
-    "4763602",
-    "4755503",
-    "4754701",
-    "4753900",
-    "4751201",
-    "4752100",
-    "4789001",
-    "4759899",
-    "4530703",
-    "4744099",
+ACTIVE_STATUS = "02"
+
+# Lista exata solicitada — usada quando FILTER_CNAES não está definido
+DEFAULT_FILTER_CNAES = frozenset(
+    {
+        "4791201",
+        "4781400",
+        "4782201",
+        "4782202",
+        "4783101",
+        "4783102",
+        "4772500",
+        "4763601",
+        "4763602",
+        "4755503",
+        "4754701",
+        "4753900",
+        "4751201",
+        "4752100",
+        "4789001",
+        "4759899",
+        "4530703",
+        "4744099",
+    }
 )
 
 ACTIVE_STATUS = "02"
@@ -60,6 +64,7 @@ class FilterContext:
     cnaes: frozenset[str]
     active_only: bool = True
     ufs: frozenset[str] = field(default_factory=frozenset)
+    include_secondary_cnae: bool = False
     matched_basics: set[str] = field(default_factory=set)
 
     @property
@@ -70,10 +75,23 @@ class FilterContext:
         return (FILE_LOAD_ORDER.get(file_type, 99), file_type)
 
 
+def normalize_cnae(value: str | None) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    if raw.isdigit() and len(raw) < 7:
+        return raw.zfill(7)
+    return raw
+
+
 def parse_secondary_cnaes(value: str | None) -> set[str]:
     if not value:
         return set()
-    return {part.strip() for part in value.split(",") if len(part.strip()) == 7}
+    return {
+        normalized
+        for part in value.split(",")
+        if (normalized := normalize_cnae(part)) and len(normalized) == 7
+    }
 
 
 def matches_estabelecimento(item: dict, ctx: FilterContext) -> bool:
@@ -83,10 +101,12 @@ def matches_estabelecimento(item: dict, ctx: FilterContext) -> bool:
         return False
     if not ctx.cnaes:
         return True
-    principal = item.get("cnae_fiscal_principal") or ""
+    principal = normalize_cnae(item.get("cnae_fiscal_principal"))
     if principal in ctx.cnaes:
         return True
-    return bool(parse_secondary_cnaes(item.get("cnaes_fiscais_secundarios")) & ctx.cnaes)
+    if ctx.include_secondary_cnae:
+        return bool(parse_secondary_cnaes(item.get("cnaes_fiscais_secundarios")) & ctx.cnaes)
+    return False
 
 
 def should_load_row(kind: str, item: dict, ctx: FilterContext | None) -> bool:
@@ -95,7 +115,7 @@ def should_load_row(kind: str, item: dict, ctx: FilterContext | None) -> bool:
     if kind == "Estabelecimentos":
         return matches_estabelecimento(item, ctx)
     if kind == "Cnaes":
-        return (item.get("codigo") or "") in ctx.cnaes
+        return normalize_cnae(item.get("codigo")) in ctx.cnaes
     if kind in {"Empresas", "Simples", "Socios"}:
         return (item.get("cnpj_basico") or "") in ctx.matched_basics
     return True

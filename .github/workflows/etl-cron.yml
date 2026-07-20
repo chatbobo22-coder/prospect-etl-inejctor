@@ -63,6 +63,7 @@ jobs:
           FILTER_UF: ${{ vars.FILTER_UF }}
           FILTER_CNAES: ${{ vars.FILTER_CNAES }}
           FILTER_ACTIVE_ONLY: ${{ vars.FILTER_ACTIVE_ONLY }}
+          FILTER_CNAE_INCLUDE_SECONDARY: ${{ vars.FILTER_CNAE_INCLUDE_SECONDARY }}
         run: |
           args="--auto"
           if [ -n "${{ inputs.competence }}" ]; then

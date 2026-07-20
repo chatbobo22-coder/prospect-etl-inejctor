@@ -21,11 +21,18 @@ def prepare_run_settings(settings, db, auto_bootstrap: bool = False):
         if db.needs_initial_load(conn):
             if settings.filters_enabled():
                 uf_msg = f", UFs={','.join(sorted(settings.filter_ufs))}" if settings.filter_ufs else ""
+                cnae_mode = (
+                    "principal+secundário"
+                    if settings.filter_include_secondary_cnae
+                    else "somente principal"
+                )
                 log.info(
-                    "Base vazia — carga filtrada (%s CNAEs, somente ativas%s)",
+                    "Base vazia — carga filtrada (%s CNAEs %s, somente ativas%s)",
                     len(settings.filter_cnaes),
+                    cnae_mode,
                     uf_msg,
                 )
+                log.info("CNAEs: %s", ", ".join(sorted(settings.filter_cnaes)))
             else:
                 log.info("Base vazia detectada — iniciando primeira carga completa (todos os tipos)")
                 settings = replace(settings, include_types=frozenset())
@@ -43,6 +50,7 @@ def build_filter_context(settings):
         cnaes=settings.filter_cnaes,
         active_only=settings.filter_active_only,
         ufs=settings.filter_ufs,
+        include_secondary_cnae=settings.filter_include_secondary_cnae,
     )
 
 

@@ -5,7 +5,7 @@ from urllib.parse import quote
 
 from dotenv import load_dotenv
 
-from .filters import DEFAULT_FILTER_CNAES, FILTER_FILE_TYPES
+from .filters import DEFAULT_FILTER_CNAES, FILTER_FILE_TYPES, normalize_cnae
 
 load_dotenv()
 
@@ -19,11 +19,15 @@ def _parse_filter_cnaes() -> frozenset[str]:
         return frozenset()
     raw = os.getenv("FILTER_CNAES")
     if raw is None:
-        return frozenset(DEFAULT_FILTER_CNAES)
+        return DEFAULT_FILTER_CNAES
     raw = raw.strip()
     if not raw or raw.lower() in {"none", "off", "false"}:
         return frozenset()
-    return frozenset(part.strip() for part in raw.split(",") if part.strip())
+    return frozenset(
+        normalized
+        for part in raw.split(",")
+        if (normalized := normalize_cnae(part))
+    )
 
 
 def _parse_filter_ufs() -> frozenset[str]:
@@ -86,6 +90,7 @@ class Settings:
     keep_downloads: bool = _env_flag("KEEP_DOWNLOADS")
     filter_cnaes: frozenset[str] = field(default_factory=_parse_filter_cnaes)
     filter_active_only: bool = _env_flag("FILTER_ACTIVE_ONLY", "true")
+    filter_include_secondary_cnae: bool = _env_flag("FILTER_CNAE_INCLUDE_SECONDARY", "false")
     filter_ufs: frozenset[str] = field(default_factory=_parse_filter_ufs)
 
     def filters_enabled(self) -> bool:
