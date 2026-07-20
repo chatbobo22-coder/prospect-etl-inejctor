@@ -60,6 +60,9 @@ jobs:
       - name: Run ETL
         env:
           KEEP_DOWNLOADS: "false"
+          FILTER_UF: ${{ vars.FILTER_UF }}
+          FILTER_CNAES: ${{ vars.FILTER_CNAES }}
+          FILTER_ACTIVE_ONLY: ${{ vars.FILTER_ACTIVE_ONLY }}
         run: |
           args="--auto"
           if [ -n "${{ inputs.competence }}" ]; then
