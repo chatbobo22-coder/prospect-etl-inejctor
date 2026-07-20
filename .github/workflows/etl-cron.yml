@@ -24,6 +24,9 @@ jobs:
   etl:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    # Usa o environment "production" onde você configurou DATABASE_URL.
+    # Se o nome do seu environment for outro, troque aqui.
+    environment: production
 
     steps:
       - name: Checkout
@@ -32,12 +35,16 @@ jobs:
       - name: Load DATABASE_URL from secrets
         env:
           SECRET_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          VAR_DATABASE_URL: ${{ vars.DATABASE_URL }}
           SECRET_POSTGRES_URL_NON_POOLING: ${{ secrets.POSTGRES_URL_NON_POOLING }}
           SECRET_POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
         run: |
           if [ -n "${SECRET_DATABASE_URL:-}" ]; then
             echo "DATABASE_URL=${SECRET_DATABASE_URL}" >> "$GITHUB_ENV"
             echo "Secret DATABASE_URL encontrado."
+          elif [ -n "${VAR_DATABASE_URL:-}" ]; then
+            echo "DATABASE_URL=${VAR_DATABASE_URL}" >> "$GITHUB_ENV"
+            echo "Variable DATABASE_URL encontrada."
           elif [ -n "${SECRET_POSTGRES_URL_NON_POOLING:-}" ]; then
             echo "DATABASE_URL=${SECRET_POSTGRES_URL_NON_POOLING}" >> "$GITHUB_ENV"
             echo "Secret POSTGRES_URL_NON_POOLING encontrado."
@@ -45,10 +52,10 @@ jobs:
             echo "DATABASE_URL=${SECRET_POSTGRES_URL}" >> "$GITHUB_ENV"
             echo "Secret POSTGRES_URL encontrado."
           else
-            echo "::error::Nenhum secret de banco encontrado."
-            echo "::error::Crie em Repository secrets (aba Repository secrets, NÃO Environment):"
+            echo "::error::Nenhum secret/variable de banco encontrado."
+            echo "::error::Opção A (mais simples): Repository secrets em"
             echo "::error::  https://github.com/chatbobo22-coder/prospect-etl-inejctor/settings/secrets/actions"
-            echo "::error::Nome recomendado: DATABASE_URL"
+            echo "::error::Opção B: Environment secrets/variables no environment 'production'"
             exit 1
           fi
           case "${DATABASE_URL:-}" in
