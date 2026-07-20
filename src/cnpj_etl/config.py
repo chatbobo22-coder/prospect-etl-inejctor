@@ -1,11 +1,29 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 from pathlib import Path
 from urllib.parse import quote
 
 from dotenv import load_dotenv
 
+from .filters import DEFAULT_FILTER_CNAES, FILTER_FILE_TYPES
+
 load_dotenv()
+
+
+def _env_flag(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_filter_cnaes() -> frozenset[str]:
+    if _env_flag("DISABLE_FILTERS"):
+        return frozenset()
+    raw = os.getenv("FILTER_CNAES")
+    if raw is None:
+        return frozenset(DEFAULT_FILTER_CNAES)
+    raw = raw.strip()
+    if not raw or raw.lower() in {"none", "off", "false"}:
+        return frozenset()
+    return frozenset(part.strip() for part in raw.split(",") if part.strip())
 
 
 def _normalize_database_url(url: str) -> str:
@@ -57,9 +75,16 @@ class Settings:
     include_types: frozenset[str] = frozenset(
         filter(None, os.getenv("INCLUDE_TYPES", "").split(","))
     )
-    keep_downloads: bool = os.getenv("KEEP_DOWNLOADS", "false").lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    keep_downloads: bool = _env_flag("KEEP_DOWNLOADS")
+    filter_cnaes: frozenset[str] = field(default_factory=_parse_filter_cnaes)
+    filter_active_only: bool = _env_flag("FILTER_ACTIVE_ONLY", "true")
+
+    def filters_enabled(self) -> bool:
+        return bool(self.filter_cnaes)
+
+    def resolved_file_types(self) -> frozenset[str]:
+        if self.include_types:
+            return self.include_types
+        if self.filter_cnaes:
+            return FILTER_FILE_TYPES
+        return frozenset()

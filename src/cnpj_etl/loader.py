@@ -7,6 +7,7 @@ from zipfile import ZipFile
 
 from psycopg import sql
 
+from .filters import should_load_row, track_estabelecimento
 from .schema import DATASETS, DATE_COLUMNS
 
 log = logging.getLogger(__name__)
@@ -105,7 +106,14 @@ def upsert_chunk(conn, table: str, rows: list[dict], conflict: str):
 
 
 def load_zip(
-    conn, zip_path, kind: str, competence: str, chunk_size: int, *, label: str | None = None
+    conn,
+    zip_path,
+    kind: str,
+    competence: str,
+    chunk_size: int,
+    *,
+    label: str | None = None,
+    filter_ctx=None,
 ) -> int:
     table, columns = DATASETS[kind]
     conflict = (
@@ -118,7 +126,7 @@ def load_zip(
         else "codigo"
     )
     display_name = label or getattr(zip_path, "name", str(zip_path))
-    count, chunk = 0, []
+    count, skipped, chunk = 0, 0, []
     with ZipFile(zip_path) as archive:
         members = [n for n in archive.namelist() if not n.endswith("/")]
         if not members:
@@ -128,12 +136,20 @@ def load_zip(
             io.TextIOWrapper(raw, encoding="latin-1", newline="") as text,
         ):
             for row in csv.reader(text, delimiter=";", quotechar='"'):
-                chunk.append(transform(kind, row, columns, competence))
+                item = transform(kind, row, columns, competence)
+                if not should_load_row(kind, item, filter_ctx):
+                    skipped += 1
+                    continue
+                if kind == "Estabelecimentos" and filter_ctx:
+                    track_estabelecimento(item, filter_ctx)
+                chunk.append(item)
                 if len(chunk) >= chunk_size:
                     upsert_chunk(conn, table, chunk, conflict)
                     count += len(chunk)
                     chunk.clear()
-                    log.info("%s: %s linhas", display_name, count)
+                    log.info("%s: %s linhas (%s ignoradas)", display_name, count, skipped)
             upsert_chunk(conn, table, chunk, conflict)
             count += len(chunk)
+    if skipped:
+        log.info("%s: total %s linhas salvas, %s ignoradas pelo filtro", display_name, count, skipped)
     return count

@@ -1,20 +1,44 @@
 import logging
 from dataclasses import replace
 
+from .filters import FILE_LOAD_ORDER, FilterContext
 from .loader import load_zip
 
 log = logging.getLogger(__name__)
 
 
 def prepare_run_settings(settings, db, auto_bootstrap: bool = False):
+    if settings.filters_enabled():
+        settings = replace(settings, include_types=settings.resolved_file_types())
     if not auto_bootstrap:
-        return settings, False
+        return settings
     with db.connect() as conn:
         if db.needs_initial_load(conn):
-            log.info("Base vazia detectada — iniciando primeira carga completa (todos os tipos)")
-            return replace(settings, include_types=frozenset()), True
+            if settings.filters_enabled():
+                log.info(
+                    "Base vazia — carga filtrada (%s CNAEs, somente ativas)",
+                    len(settings.filter_cnaes),
+                )
+            else:
+                log.info("Base vazia detectada — iniciando primeira carga completa (todos os tipos)")
+                settings = replace(settings, include_types=frozenset())
+            return settings
     log.info("Base já populada — sincronização incremental (apenas arquivos novos ou alterados)")
-    return settings, False
+    return settings
+
+
+def build_filter_context(settings):
+    if not settings.filters_enabled():
+        return None
+    from .filters import FilterContext
+
+    return FilterContext(cnaes=settings.filter_cnaes, active_only=settings.filter_active_only)
+
+
+def sort_files(files, filter_ctx: FilterContext):
+    if not filter_ctx.enabled:
+        return files
+    return sorted(files, key=lambda f: (FILE_LOAD_ORDER.get(f.file_type, 99), f.name))
 
 
 def run(
@@ -25,12 +49,13 @@ def run(
     force: bool = False,
     auto_bootstrap: bool = False,
 ):
-    settings, _ = prepare_run_settings(settings, db, auto_bootstrap)
+    settings = prepare_run_settings(settings, db, auto_bootstrap)
+    filter_ctx = build_filter_context(settings)
     competence = competence or source.latest_competence()
     all_files = source.list_files(competence)
-    files = [
-        f for f in all_files if not settings.include_types or f.file_type in settings.include_types
-    ]
+    allowed = settings.resolved_file_types()
+    files = [f for f in all_files if not allowed or f.file_type in allowed]
+    files = sort_files(files, filter_ctx or FilterContext(frozenset()))
     if settings.keep_downloads:
         target = settings.data_dir / competence
         target.mkdir(parents=True, exist_ok=True)
@@ -97,6 +122,7 @@ def run(
                         competence,
                         settings.chunk_size,
                         label=remote.name,
+                        filter_ctx=filter_ctx,
                     )
 
                 if settings.keep_downloads:
@@ -110,7 +136,8 @@ def run(
                         rows = ingest(path, sha256, size)
 
                 lock_conn.execute(
-                    "UPDATE etl.files SET status='success',rows_processed=%s,processed_at=now() WHERE competence=%s AND file_name=%s",
+                    "UPDATE etl.files SET status='success',rows_processed=%s,processed_at=now() "
+                    "WHERE competence=%s AND file_name=%s",
                     (rows, competence, remote.name),
                 )
                 lock_conn.commit()
@@ -126,10 +153,9 @@ def run(
             return total
         except Exception as exc:
             lock_conn.rollback()
-            lock_conn.execute(
-                "UPDATE etl.runs SET status='failed',finished_at=now(),files_processed=%s,"
-                "rows_processed=%s,error_message=%s WHERE id=%s",
-                (processed, total, str(exc)[:4000], run_id),
-            )
-            lock_conn.commit()
+            db.record_run_failure(run_id, processed, total, exc)
+            if "DiskFull" in type(exc).__name__ or "No space left on device" in str(exc):
+                raise RuntimeError(
+                    "Disco do Supabase/PostgreSQL cheio. Use filtros CNAE ou faça upgrade do plano."
+                ) from exc
             raise
