@@ -41,7 +41,8 @@ def resolve_database_url() -> str:
 class Settings:
     database_url: str = resolve_database_url()
     base_url: str = os.getenv(
-        "RFB_BASE_URL", "https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/"
+        "RFB_BASE_URL",
+        "https://arquivos.receitafederal.gov.br/index.php/s/YggdBLfdninEJX9",
     )
     data_dir: Path = Path(os.getenv("DATA_DIR", "./data"))
     chunk_size: int = int(os.getenv("CHUNK_SIZE", "25000"))

@@ -142,5 +142,5 @@ LIMIT 100;
 
 ## Fonte
 
-O projeto utiliza exclusivamente os arquivos públicos do diretório oficial `arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/`. Confira o leiaute oficial antes de alterações futuras, pois a Receita pode mudar nomes ou colunas.
+O projeto utiliza os arquivos públicos da Receita Federal via **Nextcloud** (`arquivos.receitafederal.gov.br/index.php/s/YggdBLfdninEJX9`), com fallback para o diretório HTML legado se `RFB_BASE_URL` apontar para a URL antiga. Confira o leiaute oficial antes de alterações futuras, pois a Receita pode mudar nomes ou colunas.
 
