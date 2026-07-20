@@ -41,5 +41,17 @@ def test_empresa_follows_estabelecimento():
     assert not should_load_row("Empresas", {"cnpj_basico": "99999999"}, ctx)
 
 
+def test_uf_filter():
+    ctx = FilterContext(frozenset(["4751201"]), active_only=True, ufs=frozenset(["PR"]))
+    item = {
+        "situacao_cadastral": "02",
+        "cnae_fiscal_principal": "4751201",
+        "uf": "SP",
+    }
+    assert not matches_estabelecimento(item, ctx)
+    item["uf"] = "PR"
+    assert matches_estabelecimento(item, ctx)
+
+
 def test_default_cnaes_count():
     assert len(DEFAULT_FILTER_CNAES) == 18

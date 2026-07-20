@@ -59,6 +59,7 @@ FILE_LOAD_ORDER = {
 class FilterContext:
     cnaes: frozenset[str]
     active_only: bool = True
+    ufs: frozenset[str] = field(default_factory=frozenset)
     matched_basics: set[str] = field(default_factory=set)
 
     @property
@@ -77,6 +78,8 @@ def parse_secondary_cnaes(value: str | None) -> set[str]:
 
 def matches_estabelecimento(item: dict, ctx: FilterContext) -> bool:
     if ctx.active_only and item.get("situacao_cadastral") != ACTIVE_STATUS:
+        return False
+    if ctx.ufs and (item.get("uf") or "").upper() not in ctx.ufs:
         return False
     if not ctx.cnaes:
         return True

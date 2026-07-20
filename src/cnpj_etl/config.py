@@ -26,6 +26,13 @@ def _parse_filter_cnaes() -> frozenset[str]:
     return frozenset(part.strip() for part in raw.split(",") if part.strip())
 
 
+def _parse_filter_ufs() -> frozenset[str]:
+    raw = os.getenv("FILTER_UF", "").strip()
+    if not raw:
+        return frozenset()
+    return frozenset(part.strip().upper() for part in raw.split(",") if part.strip())
+
+
 def _normalize_database_url(url: str) -> str:
     if url.startswith("postgres://"):
         url = "postgresql://" + url.removeprefix("postgres://")
@@ -79,6 +86,7 @@ class Settings:
     keep_downloads: bool = _env_flag("KEEP_DOWNLOADS")
     filter_cnaes: frozenset[str] = field(default_factory=_parse_filter_cnaes)
     filter_active_only: bool = _env_flag("FILTER_ACTIVE_ONLY", "true")
+    filter_ufs: frozenset[str] = field(default_factory=_parse_filter_ufs)
 
     def filters_enabled(self) -> bool:
         return bool(self.filter_cnaes)

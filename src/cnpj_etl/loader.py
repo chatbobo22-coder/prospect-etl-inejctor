@@ -178,6 +178,7 @@ def load_zip(
                         upsert_chunk(
                             conn, table, chunk, conflict, kind=kind, label=display_name
                         )
+                        conn.commit()
                         count += len(chunk)
                         chunk.clear()
                 if scanned % log_progress_every == 0:
@@ -193,6 +194,7 @@ def load_zip(
                     )
             if chunk:
                 upsert_chunk(conn, table, chunk, conflict, kind=kind, label=display_name)
+                conn.commit()
                 count += len(chunk)
     log.info(
         "%s: concluído — lidas=%s gravadas=%s ignoradas=%s empresas_unicas=%s",

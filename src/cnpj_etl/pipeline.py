@@ -20,9 +20,11 @@ def prepare_run_settings(settings, db, auto_bootstrap: bool = False):
     with db.connect() as conn:
         if db.needs_initial_load(conn):
             if settings.filters_enabled():
+                uf_msg = f", UFs={','.join(sorted(settings.filter_ufs))}" if settings.filter_ufs else ""
                 log.info(
-                    "Base vazia — carga filtrada (%s CNAEs, somente ativas)",
+                    "Base vazia — carga filtrada (%s CNAEs, somente ativas%s)",
                     len(settings.filter_cnaes),
+                    uf_msg,
                 )
             else:
                 log.info("Base vazia detectada — iniciando primeira carga completa (todos os tipos)")
@@ -37,7 +39,11 @@ def build_filter_context(settings):
         return None
     from .filters import FilterContext
 
-    return FilterContext(cnaes=settings.filter_cnaes, active_only=settings.filter_active_only)
+    return FilterContext(
+        cnaes=settings.filter_cnaes,
+        active_only=settings.filter_active_only,
+        ufs=settings.filter_ufs,
+    )
 
 
 def sort_files(files, filter_ctx: FilterContext):
