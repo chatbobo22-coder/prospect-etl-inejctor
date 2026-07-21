@@ -52,7 +52,12 @@ def main():
         logging.info("Telefone válido obrigatório: %s", settings.filter_require_telefone)
         logging.info("População mínima município: %s", settings.filter_min_population or "desligado")
         if settings.filter_ufs:
-            logging.info("UFs: %s", ",".join(sorted(settings.filter_ufs)))
+            logging.warning(
+                "FILTER_UF ativo (%s) — remova a variable FILTER_UF no GitHub para carga nacional",
+                ",".join(sorted(settings.filter_ufs)),
+            )
+        else:
+            logging.info("UFs: nacional (sem filtro de estado)")
     elif args.command == "sync-ibge":
         db.migrate(sql_dir)
         with db.connect() as conn:

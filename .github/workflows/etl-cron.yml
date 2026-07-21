@@ -68,9 +68,7 @@ jobs:
           else
             echo "FILTER_CNAES=$DEFAULT_CNAES" >> "$GITHUB_ENV"
           fi
-          if [ -n "${{ vars.FILTER_UF }}" ]; then
-            echo "FILTER_UF=${{ vars.FILTER_UF }}" >> "$GITHUB_ENV"
-          fi
+          # Carga nacional — não aplicar FILTER_UF mesmo se existir nos variables do GitHub
 
       - name: Check database connection
         run: python -m cnpj_etl.cli check-db
