@@ -52,6 +52,9 @@ jobs:
       - name: Install
         run: pip install .
 
+      - name: Migrate database schema
+        run: python -m cnpj_etl.cli migrate
+
       - name: Enrich digital presence
         env:
           ENRICH_BATCH_SIZE: ${{ inputs.batch_size || '300' }}

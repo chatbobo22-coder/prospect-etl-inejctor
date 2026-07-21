@@ -13,8 +13,6 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 from psycopg.types.json import Jsonb
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 log = logging.getLogger(__name__)
 
@@ -113,30 +111,52 @@ def site_candidates(email_domain: str | None, email_tipo: str) -> list[str]:
         return []
     if not domain_resolves(email_domain):
         return []
-    bases = {email_domain, f"www.{email_domain}"}
-    urls: list[str] = []
-    for base in bases:
-        for scheme in ("https", "http"):
-            urls.append(f"{scheme}://{base}/")
-    return urls
+    # HTTPS primeiro; HTTP só como fallback (evita timeouts longos)
+    return [
+        f"https://{email_domain}/",
+        f"https://www.{email_domain}/",
+        f"http://{email_domain}/",
+    ]
 
 
-def _http_session(timeout: int) -> requests.Session:
+def _http_session() -> requests.Session:
     session = requests.Session()
     session.headers.update({"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"})
-    retry = Retry(total=2, backoff_factor=0.5, status_forcelist=(429, 500, 502, 503, 504))
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
     return session
 
 
-def fetch_site(session: requests.Session, url: str, timeout: int) -> tuple[int | None, str, str]:
-    response = session.get(url, timeout=timeout, allow_redirects=True)
-    html = response.text[:500_000]
-    title_match = re.search(r"<title[^>]*>([^<]{1,200})</title>", html, re.I)
-    title = title_match.group(1).strip() if title_match else ""
-    return response.status_code, title, html
+def probe_site_url(
+    session: requests.Session, url: str, timeout: int
+) -> tuple[str | None, int | None, str, str, str | None]:
+    connect_timeout = min(5, timeout)
+    try:
+        response = session.get(
+            url,
+            timeout=(connect_timeout, timeout),
+            allow_redirects=True,
+        )
+        html = response.text[:500_000]
+        title_match = re.search(r"<title[^>]*>([^<]{1,200})</title>", html, re.I)
+        title = title_match.group(1).strip() if title_match else ""
+        return response.url, response.status_code, title, html, None
+    except requests.exceptions.SSLError as exc:
+        if url.startswith("https://"):
+            http_url = "http://" + url.removeprefix("https://")
+            try:
+                response = session.get(
+                    http_url,
+                    timeout=(connect_timeout, timeout),
+                    allow_redirects=True,
+                )
+                html = response.text[:500_000]
+                title_match = re.search(r"<title[^>]*>([^<]{1,200})</title>", html, re.I)
+                title = title_match.group(1).strip() if title_match else ""
+                return response.url, response.status_code, title, html, f"ssl_fallback:{exc.__class__.__name__}"
+            except requests.RequestException as inner:
+                return None, None, "", "", str(inner)[:200]
+        return None, None, "", "", str(exc)[:200]
+    except requests.RequestException as exc:
+        return None, None, "", "", str(exc)[:200]
 
 
 def detect_platforms(html: str) -> list[tuple[str, int]]:
@@ -302,34 +322,35 @@ def enrich_record(row: dict, conn, settings: EnrichSettings) -> EnrichResult:
 
     maybe_fetch_external(result.cnpj, settings, result)
 
-    session = _http_session(settings.request_timeout)
+    session = _http_session()
     candidates = site_candidates(domain, email_tipo)
     if result.site_url and result.site_url not in candidates:
         candidates.insert(0, result.site_url)
 
     last_error = None
     for url in candidates:
-        try:
-            status, title, html = fetch_site(session, url, settings.request_timeout)
-            result.site_url = url
-            result.site_http_status = status
-            result.site_titulo = title[:250] if title else None
-            result.site_ativo = status is not None and status < 500
-            if result.site_ativo:
-                platforms = detect_platforms(html)
-                if platforms:
-                    result.plataforma = platforms[0][0]
-                    result.plataforma_confianca = platforms[0][1]
-                    result.plataformas_detectadas = [name for name, _ in platforms]
-                social = extract_social_links(html, url)
-                result.instagram_url = social["instagram"]
-                result.whatsapp_url = social["whatsapp"]
-                result.linkedin_url = social["linkedin"]
-                result.enrich_status = "done" if platforms else "partial"
-                break
-        except requests.RequestException as exc:
-            last_error = str(exc)
+        final_url, status, title, html, error = probe_site_url(session, url, settings.request_timeout)
+        if error:
+            last_error = error
+            result.sinais.setdefault("site_probe_errors", []).append({url: error})
+        if status is None:
             continue
+        result.site_url = final_url or url
+        result.site_http_status = status
+        result.site_titulo = title[:250] if title else None
+        result.site_ativo = status < 500
+        if result.site_ativo and html:
+            platforms = detect_platforms(html)
+            if platforms:
+                result.plataforma = platforms[0][0]
+                result.plataforma_confianca = platforms[0][1]
+                result.plataformas_detectadas = [name for name, _ in platforms]
+            social = extract_social_links(html, result.site_url)
+            result.instagram_url = social["instagram"]
+            result.whatsapp_url = social["whatsapp"]
+            result.linkedin_url = social["linkedin"]
+            result.enrich_status = "done" if platforms else "partial"
+            break
 
     if not result.site_url:
         result.enrich_status = "no_site"
@@ -441,8 +462,25 @@ def fetch_pending(conn, limit: int, *, force: bool = False) -> list[dict]:
     return [dict(zip(columns, row)) for row in rows]
 
 
+def ensure_digital_presenca_schema(conn) -> None:
+    row = conn.execute(
+        """
+        SELECT COUNT(*) = 2
+        FROM information_schema.columns
+        WHERE table_schema = 'cnpj'
+          AND table_name = 'digital_presenca'
+          AND column_name IN ('cnpj', 'cnpj_basico')
+        """
+    ).fetchone()[0]
+    if not row:
+        raise RuntimeError(
+            "Schema cnpj.digital_presenca incompleto. Rode: python -m cnpj_etl.cli migrate"
+        )
+
+
 def run_enrichment(conn, settings: EnrichSettings | None = None, *, force: bool = False) -> dict[str, int]:
     settings = settings or EnrichSettings()
+    ensure_digital_presenca_schema(conn)
     rows = fetch_pending(conn, settings.batch_size, force=force)
     stats = {"processed": 0, "done": 0, "partial": 0, "no_site": 0, "failed": 0}
     log.info("Enriquecimento digital: %s registros na fila", len(rows))
