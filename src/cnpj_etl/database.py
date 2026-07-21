@@ -29,6 +29,20 @@ class Database:
                 conn.execute(path.read_text(encoding="utf-8"))
             conn.commit()
 
+    def reset_load(self, conn):
+        conn.execute(
+            "TRUNCATE cnpj.socios, cnpj.simples, cnpj.estabelecimentos, cnpj.empresas, "
+            "cnpj.cnaes CASCADE"
+        )
+        has_digital = conn.execute(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = 'cnpj' AND table_name = 'digital_presenca')"
+        ).fetchone()[0]
+        if has_digital:
+            conn.execute("TRUNCATE cnpj.digital_presenca")
+        conn.execute("DELETE FROM etl.files")
+        conn.execute("DELETE FROM etl.runs")
+
     def acquire_lock(self, conn) -> bool:
         return conn.execute("SELECT pg_try_advisory_lock(%s)", (7262603881,)).fetchone()[0]
 

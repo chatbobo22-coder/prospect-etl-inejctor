@@ -226,6 +226,12 @@ def run(
                 (processed, total, run_id),
             )
             lock_conn.commit()
+            if processed == 0 and file_total > 0:
+                log.warning(
+                    "Nenhum arquivo reprocessado (%s marcados como concluídos). "
+                    "Para recarregar com filtros novos: reset-load --yes + run --auto --force",
+                    file_total,
+                )
             return total
         except Exception as exc:
             lock_conn.rollback()

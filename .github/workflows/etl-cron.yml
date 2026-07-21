@@ -15,6 +15,11 @@ on:
         required: false
         type: boolean
         default: false
+      full_reload:
+        description: "Apaga dados CNPJ e reprocessa tudo do zero"
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: cnpj-etl
@@ -79,6 +84,10 @@ jobs:
       - name: Verify filters
         run: python -m cnpj_etl.cli verify-filters
 
+      - name: Reset load (full reload)
+        if: inputs.full_reload == true
+        run: python -m cnpj_etl.cli reset-load --yes
+
       - name: Run ETL
         env:
           KEEP_DOWNLOADS: "false"
@@ -87,7 +96,7 @@ jobs:
           if [ -n "${{ inputs.competence }}" ]; then
             args="$args --competence ${{ inputs.competence }}"
           fi
-          if [ "${{ inputs.force }}" = "true" ]; then
+          if [ "${{ inputs.force }}" = "true" ] || [ "${{ inputs.full_reload }}" = "true" ]; then
             args="$args --force"
           fi
           python -m cnpj_etl.cli run $args

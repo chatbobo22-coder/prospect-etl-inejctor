@@ -18,6 +18,12 @@ def main():
     sub.add_parser("check-db", help="Testa a conexão com o PostgreSQL")
     sub.add_parser("verify-filters", help="Valida filtros de carga antes do ETL")
     sub.add_parser("sync-ibge", help="Baixa população municipal do IBGE para o banco")
+    reset = sub.add_parser("reset-load", help="Apaga dados CNPJ e histórico ETL para recarga total")
+    reset.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirma apagamento (obrigatório no CI)",
+    )
     enrich = sub.add_parser("enrich-digital", help="Enriquece presença digital dos prospects")
     enrich.add_argument("--batch-size", type=int, help="Quantidade de CNPJs por execução")
     enrich.add_argument("--force", action="store_true", help="Reprocessa registros já enriquecidos")
@@ -71,6 +77,13 @@ def main():
         with db.connect() as conn:
             stats = run_enrichment(conn, settings_obj, force=args.force)
         logging.info("Enriquecimento concluído: %s", stats)
+    elif args.command == "reset-load":
+        if not args.yes:
+            raise SystemExit("Use --yes para confirmar apagamento dos dados CNPJ.")
+        with db.connect() as conn:
+            db.reset_load(conn)
+            conn.commit()
+        logging.info("Base CNPJ limpa — próximo run fará carga completa (use --force se etl.files voltar)")
     elif args.command == "migrate":
         db.migrate(sql_dir)
     else:
