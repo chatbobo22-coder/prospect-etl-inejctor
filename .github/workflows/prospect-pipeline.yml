@@ -1,5 +1,8 @@
 name: Prospect Pipeline
 
+env:
+  SQL_DIR: ${{ github.workspace }}/sql
+
 on:
   schedule:
     # Diário às 03:00 UTC (00:00 BRT)

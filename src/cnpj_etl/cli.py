@@ -18,6 +18,28 @@ from .prospect import promote_qualified
 from .source import RfbSource
 
 
+def resolve_sql_dir() -> Path:
+    """Localiza migrations no checkout ou em caminho explicitamente configurado."""
+    candidates = []
+    configured = os.getenv("SQL_DIR", "").strip()
+    if configured:
+        candidates.append(Path(configured))
+    candidates.extend(
+        [
+            Path.cwd() / "sql",
+            Path(__file__).resolve().parents[2] / "sql",
+        ]
+    )
+    for candidate in candidates:
+        if candidate.is_dir() and any(candidate.glob("*.sql")):
+            return candidate.resolve()
+    searched = ", ".join(str(path) for path in candidates)
+    raise RuntimeError(
+        "Diretório de migrations SQL não encontrado. "
+        f"Defina SQL_DIR ou execute no checkout do projeto. Caminhos verificados: {searched}"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="ETL dos Dados Abertos do CNPJ")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -68,7 +90,7 @@ def main():
         force=True,
     )
     settings, db = Settings(), Database(Settings().database_url)
-    sql_dir = Path(__file__).resolve().parents[2] / "sql"
+    sql_dir = resolve_sql_dir()
     if args.command == "check-db":
         database = db.ping()
         logging.info("Conexão OK (database=%s)", database)

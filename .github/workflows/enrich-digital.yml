@@ -1,5 +1,8 @@
 name: Digital Enrichment
 
+env:
+  SQL_DIR: ${{ github.workspace }}/sql
+
 on:
   schedule:
     # Diário às 07:00 UTC (04:00 BRT) — após o ETL noturno

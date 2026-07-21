@@ -1,5 +1,8 @@
 name: CNPJ ETL
 
+env:
+  SQL_DIR: ${{ github.workspace }}/sql
+
 on:
   schedule:
     # A cada hora, no minuto 0 (UTC)
