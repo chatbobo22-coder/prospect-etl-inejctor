@@ -95,14 +95,24 @@ def fetch_decisor(conn, cnpj_basico: str) -> tuple[str | None, str | None]:
 def count_domain_shared(conn, domain: str | None, exclude_cnpj: str | None = None) -> int:
     if not domain:
         return 0
-    row = conn.execute(
-        """
-        SELECT COUNT(DISTINCT cnpj)
-        FROM cnpj.digital_presenca
-        WHERE email_dominio = %s AND (%s IS NULL OR cnpj <> %s)
-        """,
-        (domain, exclude_cnpj, exclude_cnpj),
-    ).fetchone()
+    if exclude_cnpj:
+        row = conn.execute(
+            """
+            SELECT COUNT(DISTINCT cnpj)
+            FROM cnpj.digital_presenca
+            WHERE email_dominio = %s AND cnpj <> %s
+            """,
+            (domain, exclude_cnpj),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            SELECT COUNT(DISTINCT cnpj)
+            FROM cnpj.digital_presenca
+            WHERE email_dominio = %s
+            """,
+            (domain,),
+        ).fetchone()
     return int(row[0] or 0)
 
 

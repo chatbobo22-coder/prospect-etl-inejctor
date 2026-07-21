@@ -1,4 +1,6 @@
-from cnpj_etl.digital_enricher import extract_social_links
+from unittest.mock import MagicMock
+
+from cnpj_etl.digital_enricher import count_domain_shared, extract_social_links
 from cnpj_etl.enrichment.models import EnrichResult
 from cnpj_etl.enrichment.scoring import calculate_score, estimate_revenue_band
 from cnpj_etl.enrichment.email import classify_email
@@ -82,3 +84,27 @@ def test_presence_only_not_ecommerce_confirmado():
     )
     _, maturity = calculate_score(result)
     assert maturity != "ecommerce_confirmado"
+
+
+def test_count_domain_shared_with_excluded_cnpj_uses_typed_comparison():
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = (2,)
+
+    count = count_domain_shared(conn, "loja.com.br", "12345678000199")
+
+    query, params = conn.execute.call_args.args
+    assert "%s IS NULL" not in query
+    assert "cnpj <> %s" in query
+    assert params == ("loja.com.br", "12345678000199")
+    assert count == 2
+
+
+def test_count_domain_shared_without_exclusion_uses_single_parameter():
+    conn = MagicMock()
+    conn.execute.return_value.fetchone.return_value = (3,)
+
+    count = count_domain_shared(conn, "loja.com.br")
+
+    _, params = conn.execute.call_args.args
+    assert params == ("loja.com.br",)
+    assert count == 3
