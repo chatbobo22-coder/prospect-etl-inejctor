@@ -17,6 +17,8 @@ SELECT
   v.uf,
   v.municipio,
   v.municipio_descricao,
+  mp.populacao AS municipio_populacao,
+  mp.ano_referencia AS municipio_pop_ano,
   v.telefone_1,
   v.telefone_2,
   v.email,
@@ -25,11 +27,15 @@ SELECT
   v.source_competence,
   v.updated_at
 FROM cnpj.v_empresas_completas v
+JOIN cnpj.municipios_populacao mp
+  ON mp.uf = v.uf
+ AND mp.codigo = v.municipio
 WHERE v.situacao_cadastral = '02'
   AND v.nome_fantasia IS NOT NULL
   AND btrim(v.nome_fantasia) <> ''
   AND v.telefone_1 IS NOT NULL
   AND btrim(v.telefone_1) <> ''
+  AND mp.populacao >= 100000
   AND v.cnae_fiscal_principal IN (
     '4791201', '4781400', '4782201', '4782202', '4783101', '4783102',
     '4772500', '4763601', '4763602', '4755503', '4754701', '4753900',

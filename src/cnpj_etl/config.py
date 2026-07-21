@@ -42,6 +42,16 @@ def _parse_filter_ufs() -> frozenset[str]:
     return frozenset(part.strip().upper() for part in raw.split(",") if part.strip())
 
 
+def _parse_min_population() -> int:
+    raw = os.getenv("FILTER_MIN_POPULATION")
+    if raw is None or not raw.strip():
+        return 100_000
+    raw = raw.strip().lower()
+    if raw in {"0", "none", "off", "false"}:
+        return 0
+    return int(raw)
+
+
 def _normalize_database_url(url: str) -> str:
     if url.startswith("postgres://"):
         url = "postgresql://" + url.removeprefix("postgres://")
@@ -98,6 +108,8 @@ class Settings:
     filter_include_secondary_cnae: bool = _env_flag("FILTER_CNAE_INCLUDE_SECONDARY", "false")
     filter_require_nome_fantasia: bool = _env_flag("FILTER_REQUIRE_NOME_FANTASIA", "true")
     filter_require_telefone: bool = _env_flag("FILTER_REQUIRE_TELEFONE", "true")
+    filter_min_population: int = field(default_factory=_parse_min_population)
+    ibge_population_year: int = int(os.getenv("IBGE_POPULATION_YEAR", "2024"))
     filter_ufs: frozenset[str] = field(default_factory=_parse_filter_ufs)
 
     def filters_enabled(self) -> bool:

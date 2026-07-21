@@ -65,6 +65,8 @@ class FilterContext:
     include_secondary_cnae: bool = False
     require_nome_fantasia: bool = True
     require_telefone: bool = True
+    min_population: int = 0
+    allowed_municipios: frozenset[tuple[str, str]] = field(default_factory=frozenset)
     matched_basics: set[str] = field(default_factory=set)
 
     @property
@@ -108,11 +110,20 @@ def has_valid_telefone(item: dict) -> bool:
     return True
 
 
+def municipio_key(item: dict) -> tuple[str, str]:
+    uf = (item.get("uf") or "").upper()
+    codigo = (item.get("municipio") or "").strip().zfill(4)
+    return uf, codigo
+
+
 def matches_estabelecimento(item: dict, ctx: FilterContext) -> bool:
     if ctx.active_only and item.get("situacao_cadastral") != ACTIVE_STATUS:
         return False
     if ctx.ufs and (item.get("uf") or "").upper() not in ctx.ufs:
         return False
+    if ctx.min_population > 0 and ctx.allowed_municipios:
+        if municipio_key(item) not in ctx.allowed_municipios:
+            return False
     if ctx.require_nome_fantasia and not has_nome_fantasia(item):
         return False
     if ctx.require_telefone and not has_valid_telefone(item):

@@ -3,6 +3,7 @@ from dataclasses import replace
 import os
 
 from .filters import FILE_LOAD_ORDER, FilterContext
+from .ibge_population import ensure_municipios_populacao, load_allowed_municipios
 from .loader import load_zip
 from .source import fmt_bytes
 
@@ -39,6 +40,8 @@ def prepare_run_settings(settings, db, auto_bootstrap: bool = False):
                     extras.append("nome fantasia obrigatório")
                 if settings.filter_require_telefone:
                     extras.append("telefone válido obrigatório")
+                if settings.filter_min_population > 0:
+                    extras.append(f"municípios >= {settings.filter_min_population:,} hab".replace(",", "."))
                 if extras:
                     log.info("Prospect: %s", ", ".join(extras))
             else:
@@ -52,10 +55,23 @@ def prepare_run_settings(settings, db, auto_bootstrap: bool = False):
     return settings
 
 
-def build_filter_context(settings):
+def build_filter_context(settings, conn):
     if not settings.filters_enabled():
         return None
     from .filters import FilterContext
+
+    allowed_municipios = frozenset()
+    if settings.filter_min_population > 0:
+        allowed_municipios = load_allowed_municipios(conn, settings.filter_min_population)
+        if not allowed_municipios:
+            raise RuntimeError(
+                "Tabela cnpj.municipios_populacao vazia. Rode migrate/sync-ibge antes do ETL."
+            )
+        log.info(
+            "Municípios elegíveis (>= %s hab): %s",
+            settings.filter_min_population,
+            len(allowed_municipios),
+        )
 
     return FilterContext(
         cnaes=settings.filter_cnaes,
@@ -64,6 +80,8 @@ def build_filter_context(settings):
         include_secondary_cnae=settings.filter_include_secondary_cnae,
         require_nome_fantasia=settings.filter_require_nome_fantasia,
         require_telefone=settings.filter_require_telefone,
+        min_population=settings.filter_min_population,
+        allowed_municipios=allowed_municipios,
     )
 
 
@@ -87,7 +105,11 @@ def run(
             "Configure FILTER_CNAES ou remova DISABLE_FILTERS."
         )
     settings = prepare_run_settings(settings, db, auto_bootstrap)
-    filter_ctx = build_filter_context(settings)
+    with db.connect() as prep_conn:
+        if settings.filter_min_population > 0:
+            ensure_municipios_populacao(prep_conn, year=settings.ibge_population_year)
+            prep_conn.commit()
+        filter_ctx = build_filter_context(settings, prep_conn)
     competence = competence or source.latest_competence()
     all_files = source.list_files(competence)
     allowed = settings.resolved_file_types()

@@ -38,3 +38,13 @@ def test_disable_filters(monkeypatch):
 def test_empty_filter_active_only_defaults_true(monkeypatch):
     config = _reload_config(monkeypatch, FILTER_ACTIVE_ONLY="")
     assert config.Settings().filter_active_only is True
+
+
+def test_min_population_default(monkeypatch):
+    config = _reload_config(monkeypatch)
+    assert config._parse_min_population() == 100_000
+
+
+def test_min_population_disabled(monkeypatch):
+    config = _reload_config(monkeypatch, FILTER_MIN_POPULATION="0")
+    assert config._parse_min_population() == 0

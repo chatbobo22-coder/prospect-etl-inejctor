@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .config import Settings
 from .database import Database
+from .ibge_population import ensure_municipios_populacao
 from .pipeline import run
 from .source import RfbSource
 
@@ -15,6 +16,7 @@ def main():
     sub.add_parser("migrate", help="Cria/atualiza o banco")
     sub.add_parser("check-db", help="Testa a conexão com o PostgreSQL")
     sub.add_parser("verify-filters", help="Valida filtros de carga antes do ETL")
+    sub.add_parser("sync-ibge", help="Baixa população municipal do IBGE para o banco")
     execute = sub.add_parser("run", help="Executa uma sincronização")
     execute.add_argument("--competence", help="Competência YYYY-MM; padrão: mais recente")
     execute.add_argument("--force", action="store_true", help="Reprocessa arquivos concluídos")
@@ -44,8 +46,15 @@ def main():
         logging.info("CNAE principal only: %s", not settings.filter_include_secondary_cnae)
         logging.info("Nome fantasia obrigatório: %s", settings.filter_require_nome_fantasia)
         logging.info("Telefone válido obrigatório: %s", settings.filter_require_telefone)
+        logging.info("População mínima município: %s", settings.filter_min_population or "desligado")
         if settings.filter_ufs:
             logging.info("UFs: %s", ",".join(sorted(settings.filter_ufs)))
+    elif args.command == "sync-ibge":
+        db.migrate(sql_dir)
+        with db.connect() as conn:
+            total = ensure_municipios_populacao(conn, year=settings.ibge_population_year)
+            conn.commit()
+        logging.info("IBGE sincronizado: %s municípios", total)
     elif args.command == "migrate":
         db.migrate(sql_dir)
     else:

@@ -60,6 +60,8 @@ jobs:
           echo "FILTER_ACTIVE_ONLY=true" >> "$GITHUB_ENV"
           echo "FILTER_REQUIRE_NOME_FANTASIA=true" >> "$GITHUB_ENV"
           echo "FILTER_REQUIRE_TELEFONE=true" >> "$GITHUB_ENV"
+          echo "FILTER_MIN_POPULATION=100000" >> "$GITHUB_ENV"
+          echo "IBGE_POPULATION_YEAR=2024" >> "$GITHUB_ENV"
           echo "FILTER_CNAE_INCLUDE_SECONDARY=false" >> "$GITHUB_ENV"
           if [ -n "${{ vars.FILTER_CNAES }}" ]; then
             echo "FILTER_CNAES=${{ vars.FILTER_CNAES }}" >> "$GITHUB_ENV"
@@ -72,6 +74,9 @@ jobs:
 
       - name: Check database connection
         run: python -m cnpj_etl.cli check-db
+
+      - name: Migrate and sync IBGE population
+        run: python -m cnpj_etl.cli sync-ibge
 
       - name: Verify filters
         run: python -m cnpj_etl.cli verify-filters
