@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 
 from .filters import DEFAULT_FILTER_CNAES, FILTER_FILE_TYPES, normalize_cnae
 
+DEFAULT_FILTER_CNAES_CSV = ",".join(sorted(DEFAULT_FILTER_CNAES))
+
 load_dotenv()
 
 
@@ -94,6 +96,8 @@ class Settings:
     filter_cnaes: frozenset[str] = field(default_factory=_parse_filter_cnaes)
     filter_active_only: bool = _env_flag("FILTER_ACTIVE_ONLY", "true")
     filter_include_secondary_cnae: bool = _env_flag("FILTER_CNAE_INCLUDE_SECONDARY", "false")
+    filter_require_nome_fantasia: bool = _env_flag("FILTER_REQUIRE_NOME_FANTASIA", "true")
+    filter_require_telefone: bool = _env_flag("FILTER_REQUIRE_TELEFONE", "true")
     filter_ufs: frozenset[str] = field(default_factory=_parse_filter_ufs)
 
     def filters_enabled(self) -> bool:

@@ -14,6 +14,7 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("migrate", help="Cria/atualiza o banco")
     sub.add_parser("check-db", help="Testa a conexão com o PostgreSQL")
+    sub.add_parser("verify-filters", help="Valida filtros de carga antes do ETL")
     execute = sub.add_parser("run", help="Executa uma sincronização")
     execute.add_argument("--competence", help="Competência YYYY-MM; padrão: mais recente")
     execute.add_argument("--force", action="store_true", help="Reprocessa arquivos concluídos")
@@ -33,6 +34,18 @@ def main():
     if args.command == "check-db":
         database = db.ping()
         logging.info("Conexão OK (database=%s)", database)
+    elif args.command == "verify-filters":
+        if not settings.filters_enabled():
+            raise SystemExit(
+                "Filtros CNAE desabilitados. Remova DISABLE_FILTERS ou defina FILTER_CNAES."
+            )
+        logging.info("CNAEs (%s): %s", len(settings.filter_cnaes), ", ".join(sorted(settings.filter_cnaes)))
+        logging.info("Ativas only: %s", settings.filter_active_only)
+        logging.info("CNAE principal only: %s", not settings.filter_include_secondary_cnae)
+        logging.info("Nome fantasia obrigatório: %s", settings.filter_require_nome_fantasia)
+        logging.info("Telefone válido obrigatório: %s", settings.filter_require_telefone)
+        if settings.filter_ufs:
+            logging.info("UFs: %s", ",".join(sorted(settings.filter_ufs)))
     elif args.command == "migrate":
         db.migrate(sql_dir)
     else:

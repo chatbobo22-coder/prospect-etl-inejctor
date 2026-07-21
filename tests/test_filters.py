@@ -14,6 +14,9 @@ def test_active_cnae_match():
         "situacao_cadastral": "02",
         "cnae_fiscal_principal": "4751201",
         "cnaes_fiscais_secundarios": "",
+        "nome_fantasia": "Papelaria",
+        "ddd1": "41",
+        "telefone1": "33334444",
     }
     assert matches_estabelecimento(item, ctx)
 
@@ -44,6 +47,9 @@ def test_secondary_cnae_match_when_enabled():
         "situacao_cadastral": "02",
         "cnae_fiscal_principal": "1234567",
         "cnaes_fiscais_secundarios": "1111111,4781400",
+        "nome_fantasia": "Moda",
+        "ddd1": "11",
+        "telefone1": "988776655",
     }
     assert matches_estabelecimento(item, ctx)
 
@@ -61,6 +67,9 @@ def test_uf_filter():
         "situacao_cadastral": "02",
         "cnae_fiscal_principal": "4751201",
         "uf": "SP",
+        "nome_fantasia": "Loja",
+        "ddd1": "41",
+        "telefone1": "999887766",
     }
     assert not matches_estabelecimento(item, ctx)
     item["uf"] = "PR"
@@ -93,3 +102,51 @@ def test_default_cnaes_match_user_list():
         "4744099",
     }
     assert DEFAULT_FILTER_CNAES == frozenset(expected)
+
+
+def test_rejects_empty_nome_fantasia():
+    ctx = FilterContext(frozenset(["4751201"]), active_only=True)
+    item = {
+        "situacao_cadastral": "02",
+        "cnae_fiscal_principal": "4751201",
+        "nome_fantasia": "",
+        "ddd1": "41",
+        "telefone1": "999887766",
+    }
+    assert not matches_estabelecimento(item, ctx)
+
+
+def test_rejects_missing_telefone():
+    ctx = FilterContext(frozenset(["4751201"]), active_only=True)
+    item = {
+        "situacao_cadastral": "02",
+        "cnae_fiscal_principal": "4751201",
+        "nome_fantasia": "Loja Teste",
+        "ddd1": "",
+        "telefone1": "",
+    }
+    assert not matches_estabelecimento(item, ctx)
+
+
+def test_accepts_valid_prospect_row():
+    ctx = FilterContext(frozenset(["4751201"]), active_only=True)
+    item = {
+        "situacao_cadastral": "02",
+        "cnae_fiscal_principal": "4751201",
+        "nome_fantasia": "Loja Teste",
+        "ddd1": "41",
+        "telefone1": "999887766",
+    }
+    assert matches_estabelecimento(item, ctx)
+
+
+def test_rejects_all_zero_phone():
+    ctx = FilterContext(frozenset(["4751201"]), active_only=True)
+    item = {
+        "situacao_cadastral": "02",
+        "cnae_fiscal_principal": "4751201",
+        "nome_fantasia": "Loja Teste",
+        "ddd1": "41",
+        "telefone1": "000000000",
+    }
+    assert not matches_estabelecimento(item, ctx)

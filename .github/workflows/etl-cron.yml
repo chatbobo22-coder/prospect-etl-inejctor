@@ -54,24 +54,32 @@ jobs:
       - name: Install
         run: pip install .
 
+      - name: Configure ETL filters
+        run: |
+          DEFAULT_CNAES="4530703,4744099,4751201,4752100,4753900,4754701,4755503,4759899,4763601,4763602,4772500,4781400,4782201,4782202,4783101,4783102,4789001,4791201"
+          echo "FILTER_ACTIVE_ONLY=true" >> "$GITHUB_ENV"
+          echo "FILTER_REQUIRE_NOME_FANTASIA=true" >> "$GITHUB_ENV"
+          echo "FILTER_REQUIRE_TELEFONE=true" >> "$GITHUB_ENV"
+          echo "FILTER_CNAE_INCLUDE_SECONDARY=false" >> "$GITHUB_ENV"
+          if [ -n "${{ vars.FILTER_CNAES }}" ]; then
+            echo "FILTER_CNAES=${{ vars.FILTER_CNAES }}" >> "$GITHUB_ENV"
+          else
+            echo "FILTER_CNAES=$DEFAULT_CNAES" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${{ vars.FILTER_UF }}" ]; then
+            echo "FILTER_UF=${{ vars.FILTER_UF }}" >> "$GITHUB_ENV"
+          fi
+
       - name: Check database connection
         run: python -m cnpj_etl.cli check-db
+
+      - name: Verify filters
+        run: python -m cnpj_etl.cli verify-filters
 
       - name: Run ETL
         env:
           KEEP_DOWNLOADS: "false"
         run: |
-          for key in FILTER_UF FILTER_CNAES FILTER_ACTIVE_ONLY FILTER_CNAE_INCLUDE_SECONDARY; do
-            case "$key" in
-              FILTER_UF) val="${{ vars.FILTER_UF }}" ;;
-              FILTER_CNAES) val="${{ vars.FILTER_CNAES }}" ;;
-              FILTER_ACTIVE_ONLY) val="${{ vars.FILTER_ACTIVE_ONLY }}" ;;
-              FILTER_CNAE_INCLUDE_SECONDARY) val="${{ vars.FILTER_CNAE_INCLUDE_SECONDARY }}" ;;
-            esac
-            if [ -n "${val:-}" ]; then
-              echo "$key=$val" >> "$GITHUB_ENV"
-            fi
-          done
           args="--auto"
           if [ -n "${{ inputs.competence }}" ]; then
             args="$args --competence ${{ inputs.competence }}"

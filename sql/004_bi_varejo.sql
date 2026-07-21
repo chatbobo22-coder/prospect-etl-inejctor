@@ -26,6 +26,10 @@ SELECT
   v.updated_at
 FROM cnpj.v_empresas_completas v
 WHERE v.situacao_cadastral = '02'
+  AND v.nome_fantasia IS NOT NULL
+  AND btrim(v.nome_fantasia) <> ''
+  AND v.telefone_1 IS NOT NULL
+  AND btrim(v.telefone_1) <> ''
   AND v.cnae_fiscal_principal IN (
     '4791201', '4781400', '4782201', '4782202', '4783101', '4783102',
     '4772500', '4763601', '4763602', '4755503', '4754701', '4753900',

@@ -1,5 +1,6 @@
 import logging
 from dataclasses import replace
+import os
 
 from .filters import FILE_LOAD_ORDER, FilterContext
 from .loader import load_zip
@@ -33,8 +34,18 @@ def prepare_run_settings(settings, db, auto_bootstrap: bool = False):
                     uf_msg,
                 )
                 log.info("CNAEs: %s", ", ".join(sorted(settings.filter_cnaes)))
+                extras = []
+                if settings.filter_require_nome_fantasia:
+                    extras.append("nome fantasia obrigatório")
+                if settings.filter_require_telefone:
+                    extras.append("telefone válido obrigatório")
+                if extras:
+                    log.info("Prospect: %s", ", ".join(extras))
             else:
-                log.info("Base vazia detectada — iniciando primeira carga completa (todos os tipos)")
+                log.error(
+                    "Filtros desabilitados — carga COMPLETA nacional. "
+                    "Defina FILTER_CNAES ou remova DISABLE_FILTERS."
+                )
                 settings = replace(settings, include_types=frozenset())
             return settings
     log.info("Base já populada — sincronização incremental (apenas arquivos novos ou alterados)")
@@ -51,6 +62,8 @@ def build_filter_context(settings):
         active_only=settings.filter_active_only,
         ufs=settings.filter_ufs,
         include_secondary_cnae=settings.filter_include_secondary_cnae,
+        require_nome_fantasia=settings.filter_require_nome_fantasia,
+        require_telefone=settings.filter_require_telefone,
     )
 
 
@@ -68,6 +81,11 @@ def run(
     force: bool = False,
     auto_bootstrap: bool = False,
 ):
+    if os.getenv("GITHUB_ACTIONS") == "true" and not settings.filters_enabled():
+        raise RuntimeError(
+            "Filtros CNAE obrigatórios no GitHub Actions. "
+            "Configure FILTER_CNAES ou remova DISABLE_FILTERS."
+        )
     settings = prepare_run_settings(settings, db, auto_bootstrap)
     filter_ctx = build_filter_context(settings)
     competence = competence or source.latest_competence()

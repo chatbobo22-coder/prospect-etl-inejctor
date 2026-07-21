@@ -28,8 +28,6 @@ DEFAULT_FILTER_CNAES = frozenset(
     }
 )
 
-ACTIVE_STATUS = "02"
-
 FILTER_FILE_TYPES = frozenset(
     {
         "Cnaes",
@@ -65,6 +63,8 @@ class FilterContext:
     active_only: bool = True
     ufs: frozenset[str] = field(default_factory=frozenset)
     include_secondary_cnae: bool = False
+    require_nome_fantasia: bool = True
+    require_telefone: bool = True
     matched_basics: set[str] = field(default_factory=set)
 
     @property
@@ -94,19 +94,38 @@ def parse_secondary_cnaes(value: str | None) -> set[str]:
     }
 
 
+def has_nome_fantasia(item: dict) -> bool:
+    return bool((item.get("nome_fantasia") or "").strip())
+
+
+def has_valid_telefone(item: dict) -> bool:
+    ddd = "".join(ch for ch in (item.get("ddd1") or "") if ch.isdigit())
+    phone = "".join(ch for ch in (item.get("telefone1") or "") if ch.isdigit())
+    if len(ddd) != 2 or len(phone) < 8:
+        return False
+    if set(phone) == {"0"}:
+        return False
+    return True
+
+
 def matches_estabelecimento(item: dict, ctx: FilterContext) -> bool:
     if ctx.active_only and item.get("situacao_cadastral") != ACTIVE_STATUS:
         return False
     if ctx.ufs and (item.get("uf") or "").upper() not in ctx.ufs:
         return False
+    if ctx.require_nome_fantasia and not has_nome_fantasia(item):
+        return False
+    if ctx.require_telefone and not has_valid_telefone(item):
+        return False
     if not ctx.cnaes:
         return True
     principal = normalize_cnae(item.get("cnae_fiscal_principal"))
-    if principal in ctx.cnaes:
-        return True
-    if ctx.include_secondary_cnae:
-        return bool(parse_secondary_cnaes(item.get("cnaes_fiscais_secundarios")) & ctx.cnaes)
-    return False
+    if principal not in ctx.cnaes:
+        if not ctx.include_secondary_cnae:
+            return False
+        if not (parse_secondary_cnaes(item.get("cnaes_fiscais_secundarios")) & ctx.cnaes):
+            return False
+    return True
 
 
 def should_load_row(kind: str, item: dict, ctx: FilterContext | None) -> bool:
