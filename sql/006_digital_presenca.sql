@@ -33,7 +33,10 @@ CREATE INDEX IF NOT EXISTS idx_digital_plataforma ON cnpj.digital_presenca (plat
 CREATE INDEX IF NOT EXISTS idx_digital_status ON cnpj.digital_presenca (enrich_status);
 CREATE INDEX IF NOT EXISTS idx_digital_enriched_at ON cnpj.digital_presenca (enriched_at);
 
-CREATE OR REPLACE VIEW cnpj.v_prospect_digital AS
+-- A lista de colunas da view pode mudar quando v_bi_varejo evolui.
+-- PostgreSQL não permite renomear/reordenar colunas via CREATE OR REPLACE.
+DROP VIEW IF EXISTS cnpj.v_prospect_digital;
+CREATE VIEW cnpj.v_prospect_digital AS
 SELECT
   v.*,
   d.email_dominio,
