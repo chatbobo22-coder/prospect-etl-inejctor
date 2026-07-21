@@ -8,6 +8,7 @@ Requires-Dist: requests<3,>=2.32
 Requires-Dist: beautifulsoup4<5,>=4.12
 Requires-Dist: python-dotenv<2,>=1.0
 Requires-Dist: tenacity<10,>=9
+Requires-Dist: fastapi<1,>=0.117
 Provides-Extra: dev
 Requires-Dist: pytest<9,>=8; extra == "dev"
 Requires-Dist: ruff<1,>=0.9; extra == "dev"

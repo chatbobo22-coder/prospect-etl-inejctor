@@ -19,9 +19,9 @@ DOWNLOAD_LOG_EVERY_BYTES = 100 * 1024 * 1024  # 100 MB
 
 def fmt_bytes(num: int) -> str:
     if num >= 1024 * 1024 * 1024:
-        return f"{num / (1024 ** 3):.1f} GB"
+        return f"{num / (1024**3):.1f} GB"
     if num >= 1024 * 1024:
-        return f"{num / (1024 ** 2):.1f} MB"
+        return f"{num / (1024**2):.1f} MB"
     if num >= 1024:
         return f"{num / 1024:.1f} KB"
     return f"{num} B"
@@ -48,9 +48,7 @@ TYPE_PATTERNS = {
     "Motivos": re.compile(r"Motivos", re.I),
 }
 
-NEXTCLOUD_SHARE_RE = re.compile(
-    r"^(?P<origin>https?://[^/]+)/index\.php/s/(?P<token>[^/?#]+)"
-)
+NEXTCLOUD_SHARE_RE = re.compile(r"^(?P<origin>https?://[^/]+)/index\.php/s/(?P<token>[^/?#]+)")
 COMPETENCE_RE = re.compile(r"(20\d{2})-(0[1-9]|1[0-2])")
 WEBDAV_NS = {"d": "DAV:"}
 
@@ -86,7 +84,9 @@ def entries_from_propfind(xml_text: str) -> list[tuple[str, bool]]:
         if not name:
             continue
         resource_type = response.find(".//d:resourcetype", WEBDAV_NS)
-        is_dir = resource_type is not None and resource_type.find("d:collection", WEBDAV_NS) is not None
+        is_dir = (
+            resource_type is not None and resource_type.find("d:collection", WEBDAV_NS) is not None
+        )
         entries.append((name, is_dir))
     return entries
 
@@ -147,9 +147,7 @@ class RfbSource:
                 if match:
                     values.append(match.group(0))
         if not values:
-            raise RuntimeError(
-                "Nenhuma competência YYYY-MM encontrada na fonte da Receita Federal"
-            )
+            raise RuntimeError("Nenhuma competência YYYY-MM encontrada na fonte da Receita Federal")
         return values[-1]
 
     def list_files(self, competence: str) -> list[RemoteFile]:
@@ -204,9 +202,10 @@ class RfbSource:
         last_logged = 0
         auth = (self.token, "") if self.mode == "nextcloud" else None
         log.info("Download iniciado: %s", remote.name)
-        with self._get(remote.url, stream=True, auth=auth) as response, open(
-            destination, "wb"
-        ) as output:
+        with (
+            self._get(remote.url, stream=True, auth=auth) as response,
+            open(destination, "wb") as output,
+        ):
             expected = response.headers.get("Content-Length")
             if expected and expected.isdigit():
                 log.info("Download %s: tamanho esperado %s", remote.name, fmt_bytes(int(expected)))

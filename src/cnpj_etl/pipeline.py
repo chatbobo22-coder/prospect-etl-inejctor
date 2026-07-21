@@ -22,7 +22,9 @@ def prepare_run_settings(settings, db, auto_bootstrap: bool = False):
     with db.connect() as conn:
         if db.needs_initial_load(conn):
             if settings.filters_enabled():
-                uf_msg = f", UFs={','.join(sorted(settings.filter_ufs))}" if settings.filter_ufs else ""
+                uf_msg = (
+                    f", UFs={','.join(sorted(settings.filter_ufs))}" if settings.filter_ufs else ""
+                )
                 cnae_mode = (
                     "principal+secundário"
                     if settings.filter_include_secondary_cnae
@@ -41,7 +43,9 @@ def prepare_run_settings(settings, db, auto_bootstrap: bool = False):
                 if settings.filter_require_telefone:
                     extras.append("telefone válido obrigatório")
                 if settings.filter_min_population > 0:
-                    extras.append(f"municípios >= {settings.filter_min_population:,} hab".replace(",", "."))
+                    extras.append(
+                        f"municípios >= {settings.filter_min_population:,} hab".replace(",", ".")
+                    )
                 if extras:
                     log.info("Prospect: %s", ", ".join(extras))
             else:
@@ -211,9 +215,11 @@ def run(
                     sha256, size = source.download(remote, path, settings.download_chunk_bytes)
                     rows = ingest(path, sha256, size)
                 else:
-                    with source.temporary_download(
-                        remote, settings.download_chunk_bytes
-                    ) as (path, sha256, size):
+                    with source.temporary_download(remote, settings.download_chunk_bytes) as (
+                        path,
+                        sha256,
+                        size,
+                    ):
                         rows = ingest(path, sha256, size)
 
                 lock_conn.execute(

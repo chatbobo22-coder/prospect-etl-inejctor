@@ -60,7 +60,9 @@ def describe_row(kind: str, item: dict) -> str:
     if kind == "Empresas":
         return f"cnpj_basico={item.get('cnpj_basico')} razao={item.get('razao_social')!r} capital={item.get('capital_social')}"
     if kind == "Socios":
-        return f"cnpj_basico={item.get('cnpj_basico')} socio={item.get('nome_socio_razao_social')!r}"
+        return (
+            f"cnpj_basico={item.get('cnpj_basico')} socio={item.get('nome_socio_razao_social')!r}"
+        )
     if kind == "Simples":
         return f"cnpj_basico={item.get('cnpj_basico')} simples={item.get('opcao_simples')} mei={item.get('opcao_mei')}"
     if kind == "Cnaes":
@@ -68,7 +70,9 @@ def describe_row(kind: str, item: dict) -> str:
     return str(item.get("codigo") or item.get("cnpj_basico") or item.get("cnpj") or "")[:120]
 
 
-def upsert_chunk(conn, table: str, rows: list[dict], conflict: str, *, kind: str = "", label: str = ""):
+def upsert_chunk(
+    conn, table: str, rows: list[dict], conflict: str, *, kind: str = "", label: str = ""
+):
     if not rows:
         return
     columns = list(rows[0])
@@ -175,9 +179,7 @@ def load_zip(
                         track_estabelecimento(item, filter_ctx)
                     chunk.append(item)
                     if len(chunk) >= chunk_size:
-                        upsert_chunk(
-                            conn, table, chunk, conflict, kind=kind, label=display_name
-                        )
+                        upsert_chunk(conn, table, chunk, conflict, kind=kind, label=display_name)
                         conn.commit()
                         count += len(chunk)
                         chunk.clear()

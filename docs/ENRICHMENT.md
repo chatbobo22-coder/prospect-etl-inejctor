@@ -1,115 +1,118 @@
-# Enriquecimento digital pós-ETL
+# Enriquecimento digital v2
 
-Pipeline separado do ETL CNPJ. Classifica prospects de `cnpj.v_bi_varejo` por presença digital.
+Pipeline pós-ETL com scores separados, validação de site, crawler transacional e qualificação auditável.
 
-## Comando
+## Comandos
 
 ```bash
-python -m cnpj_etl.cli enrich-digital --batch-size 300
+python -m cnpj_etl.cli migrate
+python -m cnpj_etl.cli enrich-digital --until-empty
+python -m cnpj_etl.cli qualify-prospects
+python -m cnpj_etl.cli rescore-digital --version v2
+python -m cnpj_etl.cli requeue-enrichment --reason version_upgrade
+python -m cnpj_etl.cli prospect-pipeline
 ```
 
-GitHub Actions: workflow **Digital Enrichment** (diário + manual).
+GitHub Actions: **Prospect Pipeline** (ETL + enrich + qualify) e **Digital Enrichment** (somente enrich).
 
 ---
 
-## O que é detectado automaticamente (grátis)
+## Scores v2 (`score_version=v2`)
 
-| Sinal | Método | Confiança |
-|-------|--------|-----------|
-| E-mail corporativo vs. gratuito | Domínio do e-mail Receita | Alta |
-| Site ativo | HTTP GET no domínio do e-mail | Alta |
-| Shopify, Nuvemshop, Tray, VTEX, WooCommerce, Loja Integrada | Fingerprints no HTML | Média-alta |
-| Instagram / WhatsApp / LinkedIn | Links no HTML do site | Média |
-| Decisor (sócio-admin) | Tabela `cnpj.socios` (já carregada no ETL) | Alta |
-| Faixa de faturamento **estimada** | MEI / Porte / Simples / Capital social | Baixa (proxy) |
+| Score | Significado |
+|-------|-------------|
+| `presence_score` | Presença digital (site validado, redes, WhatsApp confirmado) |
+| `commerce_score` | Capacidade transacional (produto, preço, carrinho, checkout) |
+| `fit_score` | Adequação comercial (CNAE, porte, e-commerce confirmado) |
+| `pain_score` | Dor/oportunidade de automação (ex.: sem chatbot) |
+| `confidence_score` | Confiança dos dados (match site, CNPJ no site, Google Places) |
+| `lead_score` | `fit*0.40 + pain*0.35 + confidence*0.25` |
 
-## Score (`digital_score` 0–100)
+### Campos deprecated (compatibilidade)
 
-| Pontos | Critério |
-|--------|----------|
-| +35 | Site ativo |
-| +25 | Plataforma e-commerce detectada |
-| +15 | E-mail corporativo |
-| +10 | WhatsApp no site |
-| +10 | Instagram no site |
-| +10 | Decisor identificado (sócios) |
-| +5 | LinkedIn no site |
-
-Maturidade: `offline` → `presenca_basica` → `ecommerce_provavel` → `ecommerce_confirmado`
+- `digital_score` → espelha `lead_score`
+- `digital_maturity` → espelha `commerce_maturity`
+- `whatsapp_url` → só preenchido quando `whatsapp_valid=true`
+- `faixa_faturamento_estimada` → proxy cadastral; use `faixa_porte_receita`
 
 ---
 
-## SQL (rodar no Supabase se ainda não migrou)
+## Regras importantes
 
-Ver `sql/006_digital_presenca.sql`.
+1. **Site encontrado ≠ site oficial** — exige `site_valid` (`site_match_score >= 70`).
+2. **Site oficial ≠ e-commerce** — `ecommerce_confirmado` exige sinais transacionais fortes.
+3. **Plataforma detectada ≠ loja ativa** — WooCommerce sozinho não confirma.
+4. **Telefone CNPJ ≠ WhatsApp** — vira apenas `telefone_candidato_whatsapp`.
+5. **Faixa de porte ≠ faturamento** — somente provider externo preenche `faturamento_estimado`.
+6. **Decisor cadastral ≠ opt-in LGPD** — não contate com `confidence_score` baixo.
+7. **Instagram** — presença, não canal automático de outreach.
 
-Consulta BI:
+---
+
+## Qualificação v2
+
+Tabela: `cnpj.prospectos_qualificados`
+View: `cnpj.v_prospectos_outreach_v2`
+
+Status: `qualified` | `rejected` | `review_required` | `blocked`
+
+Padrão:
+- `confidence_score >= 60`
+- `lead_score >= 60`
+- Canal válido: e-mail corporativo comercial, WhatsApp confirmado ou telefone comercial
+- Prospects **não são apagados** — status é atualizado a cada reavaliação
 
 ```sql
-SELECT cnpj, nome_fantasia, digital_score, plataforma, site_url,
-       decisor_nome, faixa_faturamento_estimada, enrich_status
-FROM cnpj.v_prospect_digital
-ORDER BY digital_score DESC
-LIMIT 100;
+SELECT
+  cnpj,
+  razao_social,
+  nome_fantasia,
+  site_final_url,
+  presence_score,
+  commerce_score,
+  fit_score,
+  pain_score,
+  confidence_score,
+  lead_score,
+  commerce_maturity,
+  lead_classification,
+  contact_channel,
+  qualification_status
+FROM cnpj.v_prospectos_outreach_v2
+WHERE qualification_status = 'qualified'
+ORDER BY lead_score DESC, confidence_score DESC;
 ```
 
 ---
 
-## Serviços externos — matriz de consultas
+## Migrations
 
-### Grátis / freemium (CNPJ cadastral)
-
-| Serviço | URL | O que traz | Limite | Uso no projeto |
-|---------|-----|------------|--------|----------------|
-| **Dados locais (ETL)** | — | E-mail, tel, sócios, capital, porte | Ilimitado | Decisor + proxy faturamento |
-| **Brasil API** | brasilapi.com.br | CNPJ cadastral oficial | Rate limit | Opcional (`ENRICH_BRASILAPI=true`) |
-| **OpenCNPJ** | opencnpj.org | CNPJ JSON | Sem token | Alternativa gratuita |
-| **MUAC** | muac.com.br | CNPJ + sócios | 10 req/min | Amostragem pontual |
-| **CNPJ Aberto** | cnpjaberto.com.br | CNPJ + buscas | 1000/dia | Requer API key |
-
-### Pagos — faturamento, vendas, decisores verificados
-
-| Serviço | O que traz | Observação |
-|---------|------------|------------|
-| **Speedio** | Site, faixa faturamento, QSA, telefones validados | Integrável via `ENRICH_EXTERNAL_API_KEY` + `ENRICH_EXTERNAL_API_PROVIDER=speedio` |
-| **Kipflow** | Faturamento, funcionários, site, Instagram, sócios com CPF parcial | API paga, ~48 campos |
-| **Datastone** | Faixa receita, filtros B2B | Prospecção em massa |
-| **LeadCNPJ** | Presença web + decisores + enriquecimento | REST pago |
-| **Serpro (oficial)** | CNPJ tempo real | **Não** inclui faturamento |
-| **Neoway / BigDataCorp** | Firmografia + estimativas | Enterprise |
-
-> **Faturamento e número de vendas reais** não existem em base pública gratuita. São **estimativas** de data providers ou proxies (MEI/porte/Simples).
-
-### Detecção técnica (grátis, implementado)
-
-| Verificação | Como |
-|-------------|------|
-| Site online | HTTP status + título da página |
-| Plataforma | Regex no HTML (Shopify, VTEX, etc.) |
-| DNS domínio e-mail | `socket.getaddrinfo` |
+- `sql/009_enrichment_quality.sql` — colunas v2 em `digital_presenca`
+- `sql/010_prospect_qualification_v2.sql` — qualificação v2
 
 ---
 
 ## Variáveis de ambiente
 
-```env
-ENRICH_BATCH_SIZE=300
-ENRICH_DELAY_SECONDS=0.4
-ENRICH_REQUEST_TIMEOUT=15
-ENRICH_BRASILAPI=false
+Ver `.env.example`. Principais:
 
-# Opcional — Speedio ou similar
-ENRICH_EXTERNAL_API_PROVIDER=speedio
-ENRICH_EXTERNAL_API_KEY=sua_chave
-```
-
-No GitHub: secret `ENRICH_EXTERNAL_API_KEY`, variable `ENRICH_EXTERNAL_API_PROVIDER`.
+- `ENRICHMENT_VERSION=v2`
+- `PROSPECT_MIN_CONFIDENCE_SCORE=60`
+- `PROSPECT_MIN_LEAD_SCORE=60`
+- `GOOGLE_PLACES_ENABLED=false` (ativar só com chave)
+- `ENRICH_NO_SITE_RETRY_DAYS=30`
 
 ---
 
-## Limitações honestas
+## Google Places (opcional)
 
-1. **Sem e-mail corporativo** → difícil descobrir site (só heurística por nome).
-2. **WhatsApp comercial** → link no site é confiável; número sozinho não prova WhatsApp Business.
-3. **Faturamento** → use faixa estimada local ou API paga; Receita não publica receita.
-4. **Decisor com e-mail/telefone direto** → sócios na base Receita (nome); e-mail pessoal do decisor exige provider pago.
+Text Search + Place Details com match determinístico. Site do Place tem precedência sobre domínio de e-mail quando `google_place_match_score >= 70`. TTL cache: 90 dias.
+
+---
+
+## Segurança
+
+- Crawler com proteção SSRF (DNS, IPs privados, metadata cloud, redirects)
+- Resposta limitada a 2 MB, somente HTML
+- SQL dinâmico: whitelist de views (`v_prospect_candidates`, `v_bi_varejo`)
+- Advisory lock impede enriquecimento concorrente

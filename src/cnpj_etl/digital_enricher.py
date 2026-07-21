@@ -1,244 +1,77 @@
-"""Enriquecimento de presença digital pós-ETL (site, plataforma, redes, decisores)."""
+"""Orquestrador de enriquecimento digital v2 (compatível com imports legados)."""
 
 from __future__ import annotations
 
 import logging
-import os
-import re
-import socket
-import time
-from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import urljoin, urlparse
 
 import requests
+from psycopg import sql
 from psycopg.types.json import Jsonb
+
+from .enrichment.commerce import (
+    analyze_page_html,
+    crawl_transactional_pages,
+    extract_instagram_link,
+    extract_linkedin_link,
+    has_strong_commerce_from_flags,
+)
+from .enrichment.email import classify_email
+from .enrichment.google_places import enrich_from_google_places
+from .enrichment.models import (
+    ALLOWED_CANDIDATE_VIEWS,
+    SCORE_VERSION,
+    EnrichResult,
+    EnrichSettings,
+)
+from .enrichment.providers.speedio import SpeedioProvider
+from .enrichment.scoring import apply_all_scores, classify_company_size_band
+
+# Re-exports legados para testes
+from .enrichment.scoring import calculate_score, estimate_revenue_band  # noqa: F401
+from .enrichment.commerce import detect_platforms  # noqa: F401
+from .enrichment.whatsapp import extract_whatsapp_candidate  # noqa: F401
+from .enrichment.website import (
+    http_session,
+    safe_fetch,
+    site_candidates_from_email,
+    validate_site_ownership,
+)
+from .enrichment.whatsapp import (
+    extract_whatsapp_from_html,
+    phone_to_whatsapp_candidate,
+)
 
 log = logging.getLogger(__name__)
 
-USER_AGENT = "cnpj-etl-enricher/1.0 (+https://github.com/chatbobo22-coder/prospect-etl-inejctor)"
-FREE_EMAIL_DOMAINS = frozenset(
-    {
-        "gmail.com",
-        "googlemail.com",
-        "hotmail.com",
-        "outlook.com",
-        "live.com",
-        "yahoo.com",
-        "yahoo.com.br",
-        "icloud.com",
-        "bol.com.br",
-        "uol.com.br",
-        "terra.com.br",
-        "ig.com.br",
-        "msn.com",
-        "proton.me",
-        "protonmail.com",
-        "ymail.com",
-    }
-)
-
-PLATFORM_PATTERNS: dict[str, list[str]] = {
-    "shopify": [r"cdn\.shopify\.com", r"Shopify\.theme", r"myshopify\.com", r"shopify-section"],
-    "nuvemshop": [r"nuvemshop", r"tiendanube", r"lojavirtualnuvem", r"mitiendanube"],
-    "tray": [r"tray\.com\.br", r"traycdn", r"traycorp"],
-    "vtex": [r"vtexassets", r"vteximg", r"__vtex", r"vtexcommercestable", r"vtex\.com"],
-    "woocommerce": [r"woocommerce", r"wp-content/plugins/woocommerce", r"/wc-api/"],
-    "loja_integrada": [r"lojaintegrada\.com\.br", r"cdn\.lojaintegrada", r"instaclose"],
-}
-
 ADMIN_QUALIFICATIONS = frozenset({"05", "16", "17", "49"})
-
-
-@dataclass
-class EnrichSettings:
-    batch_size: int = int(os.getenv("ENRICH_BATCH_SIZE", "300"))
-    request_timeout: int = int(os.getenv("ENRICH_REQUEST_TIMEOUT", "15"))
-    delay_seconds: float = float(os.getenv("ENRICH_DELAY_SECONDS", "0.5"))
-    brasilapi_enabled: bool = os.getenv("ENRICH_BRASILAPI", "false").lower() in {"1", "true", "yes"}
-    external_api_key: str = os.getenv("ENRICH_EXTERNAL_API_KEY", "").strip()
-    external_api_provider: str = os.getenv("ENRICH_EXTERNAL_API_PROVIDER", "").strip().lower()
-
-
-@dataclass
-class EnrichResult:
-    cnpj: str
-    cnpj_basico: str
-    email_original: str | None = None
-    email_dominio: str | None = None
-    email_tipo: str | None = None
-    site_url: str | None = None
-    site_ativo: bool = False
-    site_http_status: int | None = None
-    site_titulo: str | None = None
-    plataforma: str | None = None
-    plataformas_detectadas: list[str] = field(default_factory=list)
-    plataforma_confianca: int = 0
-    instagram_url: str | None = None
-    whatsapp_url: str | None = None
-    linkedin_url: str | None = None
-    decisor_nome: str | None = None
-    decisor_qualificacao: str | None = None
-    faixa_faturamento_estimada: str | None = None
-    faturamento_fonte: str | None = None
-    digital_score: int = 0
-    digital_maturity: str = "offline"
-    sinais: dict[str, Any] = field(default_factory=dict)
-    enrich_status: str = "pending"
-    enrich_error: str | None = None
-
-
-def classify_email(email: str | None) -> tuple[str | None, str | None, str]:
-    if not email or "@" not in email:
-        return None, None, "invalido"
-    email = email.strip().lower()
-    domain = email.rsplit("@", 1)[1]
-    if domain in FREE_EMAIL_DOMAINS:
-        return domain, email, "gratuito"
-    return domain, email, "corporativo"
-
-
-def domain_resolves(domain: str) -> bool:
-    try:
-        socket.getaddrinfo(domain, None)
-        return True
-    except socket.gaierror:
-        return False
-
-
-def site_candidates(email_domain: str | None, email_tipo: str) -> list[str]:
-    if not email_domain or email_tipo != "corporativo":
-        return []
-    if not domain_resolves(email_domain):
-        return []
-    # HTTPS primeiro; HTTP só como fallback (evita timeouts longos)
-    return [
-        f"https://{email_domain}/",
-        f"https://www.{email_domain}/",
-        f"http://{email_domain}/",
-    ]
-
-
-def _http_session() -> requests.Session:
-    session = requests.Session()
-    session.headers.update({"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"})
-    return session
-
-
-def probe_site_url(
-    session: requests.Session, url: str, timeout: int
-) -> tuple[str | None, int | None, str, str, str | None]:
-    connect_timeout = min(5, timeout)
-    try:
-        response = session.get(
-            url,
-            timeout=(connect_timeout, timeout),
-            allow_redirects=True,
-        )
-        html = response.text[:500_000]
-        title_match = re.search(r"<title[^>]*>([^<]{1,200})</title>", html, re.I)
-        title = title_match.group(1).strip() if title_match else ""
-        return response.url, response.status_code, title, html, None
-    except requests.exceptions.SSLError as exc:
-        if url.startswith("https://"):
-            http_url = "http://" + url.removeprefix("https://")
-            try:
-                response = session.get(
-                    http_url,
-                    timeout=(connect_timeout, timeout),
-                    allow_redirects=True,
-                )
-                html = response.text[:500_000]
-                title_match = re.search(r"<title[^>]*>([^<]{1,200})</title>", html, re.I)
-                title = title_match.group(1).strip() if title_match else ""
-                return response.url, response.status_code, title, html, f"ssl_fallback:{exc.__class__.__name__}"
-            except requests.RequestException as inner:
-                return None, None, "", "", str(inner)[:200]
-        return None, None, "", "", str(exc)[:200]
-    except requests.RequestException as exc:
-        return None, None, "", "", str(exc)[:200]
-
-
-def detect_platforms(html: str) -> list[tuple[str, int]]:
-    found: list[tuple[str, int]] = []
-    for name, patterns in PLATFORM_PATTERNS.items():
-        hits = sum(1 for pattern in patterns if re.search(pattern, html, re.I))
-        if hits:
-            confidence = min(100, 40 + hits * 20)
-            found.append((name, confidence))
-    found.sort(key=lambda item: item[1], reverse=True)
-    return found
+ENRICHMENT_ADVISORY_LOCK = 7262603882
 
 
 def extract_social_links(html: str, base_url: str | None) -> dict[str, str | None]:
-    links = {"instagram": None, "whatsapp": None, "linkedin": None}
-    for match in re.finditer(r"""href=["']([^"']+)["']""", html, re.I):
-        href = match.group(1)
-        if base_url and href.startswith("/"):
-            href = urljoin(base_url, href)
-        lower = href.lower()
-        if "instagram.com/" in lower and not links["instagram"]:
-            links["instagram"] = href.split("?", 1)[0]
-        elif ("wa.me/" in lower or "api.whatsapp.com/" in lower) and not links["whatsapp"]:
-            links["whatsapp"] = href.split("?", 1)[0]
-        elif "linkedin.com/" in lower and not links["linkedin"]:
-            links["linkedin"] = href.split("?", 1)[0]
-    return links
+    wa = extract_whatsapp_from_html(html, base_url)
+    return {
+        "instagram": extract_instagram_link(html, base_url),
+        "whatsapp": wa.get("canonical_url") if wa.get("valid") else None,
+        "linkedin": extract_linkedin_link(html, base_url),
+    }
 
 
-def estimate_revenue_band(
-    *,
-    porte: str | None,
-    opcao_mei: str | None,
-    opcao_simples: str | None,
-    capital_social,
-) -> tuple[str, str]:
-    if opcao_mei == "S":
-        return "até R$ 81 mil/ano (MEI)", "heuristica_mei"
-    if porte == "01":
-        return "até R$ 360 mil/ano (Microempresa)", "heuristica_porte"
-    if porte == "03":
-        return "R$ 360 mil – R$ 4,8 mi/ano (EPP)", "heuristica_porte"
-    if porte == "05":
-        return "acima de R$ 4,8 mi/ano (Demais)", "heuristica_porte"
-    if opcao_simples == "S":
-        return "Simples Nacional (faixa variável)", "heuristica_simples"
-    try:
-        capital = float(capital_social or 0)
-    except (TypeError, ValueError):
-        capital = 0
-    if capital >= 10_000_000:
-        return "capital social elevado (≥ R$ 10 mi)", "heuristica_capital"
-    if capital >= 1_000_000:
-        return "capital social médio-alto (≥ R$ 1 mi)", "heuristica_capital"
-    return "não estimado (sem MEI/Simples/porte conclusivo)", "heuristica_local"
+def resolve_candidate_view(name: str) -> str:
+    if name not in ALLOWED_CANDIDATE_VIEWS:
+        raise ValueError(f"View não autorizada: {name}")
+    return name
 
 
-def calculate_score(result: EnrichResult) -> tuple[int, str]:
-    score = 0
-    if result.email_tipo == "corporativo":
-        score += 15
-    if result.site_ativo:
-        score += 35
-    if result.plataforma:
-        score += 25
-    if result.whatsapp_url:
-        score += 10
-    if result.instagram_url:
-        score += 10
-    if result.linkedin_url:
-        score += 5
-    if result.decisor_nome:
-        score += 10
-    if score >= 75:
-        maturity = "ecommerce_confirmado"
-    elif score >= 50:
-        maturity = "ecommerce_provavel"
-    elif score >= 25:
-        maturity = "presenca_basica"
-    else:
-        maturity = "offline"
-    return min(score, 100), maturity
+def acquire_enrichment_lock(conn) -> bool:
+    return conn.execute("SELECT pg_try_advisory_lock(%s)", (ENRICHMENT_ADVISORY_LOCK,)).fetchone()[
+        0
+    ]
+
+
+def release_enrichment_lock(conn) -> None:
+    conn.execute("SELECT pg_advisory_unlock(%s)", (ENRICHMENT_ADVISORY_LOCK,))
 
 
 def fetch_decisor(conn, cnpj_basico: str) -> tuple[str | None, str | None]:
@@ -259,60 +92,65 @@ def fetch_decisor(conn, cnpj_basico: str) -> tuple[str | None, str | None]:
     return row[0], row[1]
 
 
-def maybe_fetch_external(cnpj: str, settings: EnrichSettings, result: EnrichResult) -> None:
-    if settings.external_api_key and settings.external_api_provider == "speedio":
-        try:
-            response = requests.get(
-                "https://api-get-leads.speedio.com.br/search_enriched_leads/cnpj",
-                params={"cnpj": cnpj},
-                headers={"Authorization": settings.external_api_key},
-                timeout=settings.request_timeout,
-            )
-            if response.status_code == 200:
-                payload = response.json()
-                item = payload[0] if isinstance(payload, list) and payload else payload
-                if isinstance(item, dict):
-                    if not result.site_url and item.get("website"):
-                        result.site_url = item["website"]
-                        result.sinais["speedio_website"] = item["website"]
-                    band = item.get("faixa_faturamento_empresa") or item.get("faixa_faturamento_cnpj")
-                    if band:
-                        result.faixa_faturamento_estimada = str(band)
-                        result.faturamento_fonte = "speedio"
-                    admin = item.get("administrador")
-                    if admin and not result.decisor_nome:
-                        result.decisor_nome = admin
-                        result.faturamento_fonte = result.faturamento_fonte or "speedio"
-        except requests.RequestException as exc:
-            result.sinais["speedio_error"] = str(exc)[:200]
+def count_domain_shared(conn, domain: str | None, exclude_cnpj: str | None = None) -> int:
+    if not domain:
+        return 0
+    row = conn.execute(
+        """
+        SELECT COUNT(DISTINCT cnpj)
+        FROM cnpj.digital_presenca
+        WHERE email_dominio = %s AND (%s IS NULL OR cnpj <> %s)
+        """,
+        (domain, exclude_cnpj, exclude_cnpj),
+    ).fetchone()
+    return int(row[0] or 0)
 
-    if settings.brasilapi_enabled:
-        try:
-            response = requests.get(
-                f"https://brasilapi.com.br/api/cnpj/v1/{cnpj}",
-                timeout=settings.request_timeout,
-            )
-            if response.status_code == 200:
-                payload = response.json()
-                result.sinais["brasilapi_situacao"] = payload.get("descricao_situacao_cadastral")
-        except requests.RequestException as exc:
-            result.sinais["brasilapi_error"] = str(exc)[:200]
+
+def _compute_next_retry(result: EnrichResult, settings: EnrichSettings) -> datetime | None:
+    now = datetime.now(timezone.utc)
+    if result.retry_reason == "google_places_no_result":
+        return now + timedelta(days=90)
+    fetch = result.sinais.get("fetch_meta") or {}
+    if fetch.get("retry_after_days"):
+        return now + timedelta(days=int(fetch["retry_after_days"]))
+    if fetch.get("retry_after_hours"):
+        return now + timedelta(hours=int(fetch["retry_after_hours"]))
+    if result.enrich_status == "no_site":
+        return now + timedelta(days=settings.no_site_retry_days)
+    if result.enrich_status == "failed":
+        return now + timedelta(hours=settings.failed_retry_hours)
+    return None
 
 
 def enrich_record(row: dict, conn, settings: EnrichSettings) -> EnrichResult:
-    result = EnrichResult(cnpj=row["cnpj"], cnpj_basico=row["cnpj_basico"])
+    result = EnrichResult(
+        cnpj=row["cnpj"],
+        cnpj_basico=row["cnpj_basico"],
+        razao_social=row.get("razao_social"),
+        nome_fantasia=row.get("nome_fantasia"),
+        uf=row.get("uf"),
+        municipio_descricao=row.get("municipio_descricao"),
+        telefone_1=row.get("telefone_1"),
+        logradouro=row.get("logradouro"),
+        cep=row.get("cep"),
+        cnae_fiscal_principal=row.get("cnae_fiscal_principal"),
+    )
     result.email_original = row.get("email")
     domain, normalized_email, email_tipo = classify_email(result.email_original)
     result.email_dominio = domain
     result.email_tipo = email_tipo
     result.sinais["email"] = normalized_email
+    result.sinais["porte"] = row.get("porte")
+    result.sinais["opcao_mei"] = row.get("opcao_mei")
 
-    faixa, fonte = estimate_revenue_band(
+    faixa, fonte = classify_company_size_band(
         porte=row.get("porte"),
         opcao_mei=row.get("opcao_mei"),
         opcao_simples=row.get("opcao_simples"),
         capital_social=row.get("capital_social"),
     )
+    result.faixa_porte_receita = faixa
+    result.porte_receita_fonte = fonte
     result.faixa_faturamento_estimada = faixa
     result.faturamento_fonte = fonte
 
@@ -320,144 +158,400 @@ def enrich_record(row: dict, conn, settings: EnrichSettings) -> EnrichResult:
     result.decisor_nome = decisor
     result.decisor_qualificacao = qualificacao
 
-    maybe_fetch_external(result.cnpj, settings, result)
+    if settings.external_api_provider == "speedio":
+        SpeedioProvider().enrich(result.cnpj, result, settings)
 
-    session = _http_session()
-    candidates = site_candidates(domain, email_tipo)
-    if result.site_url and result.site_url not in candidates:
-        candidates.insert(0, result.site_url)
+    if settings.brasilapi_enabled:
+        try:
+            response = requests.get(
+                f"https://brasilapi.com.br/api/cnpj/v1/{result.cnpj}",
+                timeout=settings.request_timeout,
+            )
+            if response.status_code == 200:
+                payload = response.json()
+                result.sinais["brasilapi_situacao"] = payload.get("descricao_situacao_cadastral")
+        except requests.RequestException as exc:
+            result.sinais["brasilapi_error"] = exc.__class__.__name__
+
+    cached = row.get("google_places_checked_at")
+    enrich_from_google_places(
+        result,
+        settings,
+        cached_checked_at=cached,
+        cached_place_id=row.get("google_place_id"),
+    )
+
+    shared = count_domain_shared(conn, domain, result.cnpj)
+    result.domain_shared_count = shared
+    result.domain_is_shared = shared >= 3
+
+    session = http_session()
+    candidates: list[tuple[str, str]] = []
+    if result.site_url:
+        candidates.append((result.site_url, result.site_source or "external_provider"))
+    for url in site_candidates_from_email(domain, email_tipo):
+        candidates.append((url, "corporate_email_domain"))
 
     last_error = None
-    for url in candidates:
-        final_url, status, title, html, error = probe_site_url(session, url, settings.request_timeout)
-        if error:
-            last_error = error
-            result.sinais.setdefault("site_probe_errors", []).append({url: error})
-        if status is None:
+    html = ""
+    for url, source in candidates:
+        fetch = safe_fetch(session, url, settings)
+        if fetch.error:
+            last_error = fetch.error
+            result.sinais.setdefault("site_probe_errors", []).append({url: fetch.error})
+            result.sinais["fetch_meta"] = {
+                "retry_after_days": fetch.retry_after_days,
+                "retry_after_hours": fetch.retry_after_hours,
+            }
+        if fetch.status is None:
             continue
-        result.site_url = final_url or url
-        result.site_http_status = status
-        result.site_titulo = title[:250] if title else None
-        result.site_ativo = status < 500
-        if result.site_ativo and html:
-            platforms = detect_platforms(html)
-            if platforms:
-                result.plataforma = platforms[0][0]
-                result.plataforma_confianca = platforms[0][1]
-                result.plataformas_detectadas = [name for name, _ in platforms]
-            social = extract_social_links(html, result.site_url)
-            result.instagram_url = social["instagram"]
-            result.whatsapp_url = social["whatsapp"]
-            result.linkedin_url = social["linkedin"]
-            result.enrich_status = "done" if platforms else "partial"
+
+        result.site_http_status = fetch.status
+        result.site_final_url = fetch.final_url
+        result.site_content_type = fetch.content_type
+        result.site_redirect_count = fetch.redirect_count
+        result.site_reachable = fetch.reachable
+        result.site_url = fetch.final_url or url
+        result.site_source = source
+        result.site_titulo = fetch.title[:250] if fetch.title else None
+        result.site_ativo = fetch.reachable and fetch.status not in (404, 410)
+        html = fetch.html
+
+        if fetch.reachable and html:
+            match_score, reasons, status = validate_site_ownership(
+                html=html,
+                title=fetch.title,
+                final_url=fetch.final_url,
+                nome_fantasia=result.nome_fantasia,
+                razao_social=result.razao_social,
+                municipio=result.municipio_descricao,
+                uf=result.uf,
+                telefone=result.telefone_1,
+                cnpj=result.cnpj,
+                email_domain=domain,
+                email_tipo=email_tipo,
+                cnae=result.cnae_fiscal_principal,
+                domain_shared_count=shared,
+            )
+            result.site_match_score = match_score
+            result.site_validation_reasons = reasons
+            result.site_match_status = status
+            result.site_valid = (
+                match_score >= settings.site_match_threshold and status == "validated"
+            )
+            if "cnpj_no_site" in reasons:
+                result.sinais["cnpj_on_site"] = True
+            if status == "rejected_webmail":
+                result.site_valid = False
+                break
+            if result.site_valid or fetch.status in (401, 403):
+                break
+        elif fetch.status in (404, 410):
+            result.site_valid = False
             break
 
-    if not result.site_url:
+    if html and result.site_reachable:
+        page_signals = analyze_page_html(html, result.site_final_url)
+        if page_signals.coming_soon:
+            result.transactional_signals["coming_soon"] = True
+        result.has_product_page = page_signals.has_product_page
+        result.has_product_schema = page_signals.has_product_schema
+        result.has_price = page_signals.has_price
+        result.has_cart = page_signals.has_cart
+        result.has_checkout = page_signals.has_checkout
+        result.has_add_to_cart = page_signals.has_add_to_cart
+        result.has_catalog = page_signals.has_catalog
+        result.has_search = page_signals.has_search
+        result.has_customer_login = page_signals.has_customer_login
+        result.has_chat = page_signals.has_chat
+        result.chat_provider = page_signals.chat_provider
+        result.has_contact_form = page_signals.has_contact_form
+        result.plataforma = page_signals.plataforma
+        result.plataformas_detectadas = page_signals.plataformas_detectadas
+        result.plataforma_confianca = page_signals.plataforma_confianca
+
+        if result.site_valid:
+            crawled = crawl_transactional_pages(
+                session, result.site_final_url or result.site_url, settings
+            )
+            result.has_product_page = result.has_product_page or crawled.has_product_page
+            result.has_product_schema = result.has_product_schema or crawled.has_product_schema
+            result.has_price = result.has_price or crawled.has_price
+            result.has_cart = result.has_cart or crawled.has_cart
+            result.has_checkout = result.has_checkout or crawled.has_checkout
+            result.has_add_to_cart = result.has_add_to_cart or crawled.has_add_to_cart
+            result.has_catalog = result.has_catalog or crawled.has_catalog
+            result.has_search = result.has_search or crawled.has_search
+            result.has_chat = result.has_chat or crawled.has_chat
+            result.chat_provider = result.chat_provider or crawled.chat_provider
+            if crawled.plataforma and crawled.plataforma_confianca > result.plataforma_confianca:
+                result.plataforma = crawled.plataforma
+                result.plataforma_confianca = crawled.plataforma_confianca
+                result.plataformas_detectadas = crawled.plataformas_detectadas
+
+        wa = extract_whatsapp_from_html(html, result.site_final_url)
+        if wa["detected"]:
+            result.whatsapp_detected = True
+            result.whatsapp_source = "website"
+            result.whatsapp_confidence = wa["confidence"]
+            if wa["valid"]:
+                result.whatsapp_valid = True
+                result.whatsapp_number = wa["number"]
+                result.whatsapp_number_normalized = wa["normalized"]
+                result.whatsapp_url = wa["canonical_url"]
+            else:
+                result.whatsapp_valid = False
+
+        result.instagram_url = extract_instagram_link(html, result.site_final_url)
+        result.linkedin_url = extract_linkedin_link(html, result.site_final_url)
+
+        if result.site_valid and has_strong_commerce_from_flags(
+            has_checkout=result.has_checkout,
+            has_cart=result.has_cart,
+            has_add_to_cart=result.has_add_to_cart,
+            has_product_schema=result.has_product_schema,
+            has_price=result.has_price,
+            plataforma=result.plataforma,
+        ):
+            result.enrich_status = "done"
+        elif result.site_reachable:
+            result.enrich_status = "partial"
+        else:
+            result.enrich_status = "failed"
+    elif not result.site_url:
         result.enrich_status = "no_site"
-    elif not result.site_ativo:
+    elif not result.site_reachable:
         result.enrich_status = "failed"
         result.enrich_error = last_error
-    elif result.enrich_status == "pending":
+    else:
         result.enrich_status = "partial"
 
-    if not result.whatsapp_url and row.get("telefone_1"):
-        digits = re.sub(r"\D", "", row["telefone_1"])
-        if len(digits) >= 10:
-            result.sinais["telefone_candidato_whatsapp"] = f"https://wa.me/55{digits}"
+    if result.telefone_1 and not result.whatsapp_valid:
+        candidate = phone_to_whatsapp_candidate(result.telefone_1)
+        if candidate:
+            result.telefone_candidato_whatsapp = candidate
+            result.sinais["telefone_candidato"] = True
 
-    result.digital_score, result.digital_maturity = calculate_score(result)
+    apply_all_scores(result)
+    result.enrichment_version = settings.enrichment_version
+    result.enrich_attempts = int(row.get("enrich_attempts") or 0) + 1
+    next_retry = _compute_next_retry(result, settings)
+    result._next_retry_at = next_retry  # noqa: SLF001 — uso interno upsert
     return result
 
 
+def rescore_from_row(row: dict) -> EnrichResult:
+    """Recalcula scores v2 a partir de dados persistidos, sem HTTP."""
+    result = EnrichResult(cnpj=row["cnpj"], cnpj_basico=row["cnpj_basico"])
+    for key, value in row.items():
+        if hasattr(result, key) and key not in {"cnpj", "cnpj_basico"}:
+            setattr(result, key, value)
+    if isinstance(result.sinais, str):
+        result.sinais = {}
+    apply_all_scores(result)
+    result.score_version = SCORE_VERSION
+    result.digital_score = result.lead_score
+    result.digital_maturity = result.commerce_maturity
+    return result
+
+
+_UPSERT_COLUMNS = [
+    "cnpj",
+    "cnpj_basico",
+    "email_original",
+    "email_dominio",
+    "email_tipo",
+    "site_url",
+    "site_ativo",
+    "site_http_status",
+    "site_titulo",
+    "site_source",
+    "site_match_score",
+    "site_match_status",
+    "site_reachable",
+    "site_valid",
+    "site_content_type",
+    "site_final_url",
+    "site_redirect_count",
+    "site_validation_reasons",
+    "domain_shared_count",
+    "domain_is_shared",
+    "plataforma",
+    "plataformas_detectadas",
+    "plataforma_confianca",
+    "instagram_url",
+    "whatsapp_url",
+    "linkedin_url",
+    "whatsapp_detected",
+    "whatsapp_number",
+    "whatsapp_number_normalized",
+    "whatsapp_valid",
+    "whatsapp_source",
+    "whatsapp_confidence",
+    "telefone_candidato_whatsapp",
+    "google_place_id",
+    "google_place_match_score",
+    "google_place_name",
+    "google_place_address",
+    "google_place_phone",
+    "google_place_website",
+    "google_business_status",
+    "google_rating",
+    "google_rating_count",
+    "google_maps_url",
+    "has_product_page",
+    "has_product_schema",
+    "has_price",
+    "has_cart",
+    "has_checkout",
+    "has_add_to_cart",
+    "has_catalog",
+    "has_search",
+    "has_customer_login",
+    "has_chat",
+    "chat_provider",
+    "has_contact_form",
+    "transactional_signals",
+    "decisor_nome",
+    "decisor_qualificacao",
+    "faixa_faturamento_estimada",
+    "faturamento_fonte",
+    "faixa_porte_receita",
+    "porte_receita_fonte",
+    "faturamento_estimado",
+    "faturamento_estimado_fonte",
+    "presence_score",
+    "commerce_score",
+    "fit_score",
+    "pain_score",
+    "confidence_score",
+    "lead_score",
+    "presence_maturity",
+    "commerce_maturity",
+    "lead_classification",
+    "score_version",
+    "digital_score",
+    "digital_maturity",
+    "sinais",
+    "enrich_status",
+    "enrich_error",
+    "enrich_attempts",
+    "retry_reason",
+    "enrichment_version",
+]
+
+
+def _result_to_params(result: EnrichResult) -> dict[str, Any]:
+    params = {col: getattr(result, col, None) for col in _UPSERT_COLUMNS}
+    params["sinais"] = Jsonb(result.sinais)
+    params["transactional_signals"] = Jsonb(result.transactional_signals)
+    params["site_last_checked_at"] = datetime.now(timezone.utc)
+    params["last_attempt_at"] = datetime.now(timezone.utc)
+    params["next_retry_at"] = getattr(result, "_next_retry_at", None)
+    params["google_places_checked_at"] = (
+        datetime.now(timezone.utc) if result.google_place_id else None
+    )
+    return params
+
+
 def upsert_result(conn, result: EnrichResult) -> None:
+    params = _result_to_params(result)
+    timing = [
+        "site_last_checked_at",
+        "last_attempt_at",
+        "next_retry_at",
+        "google_places_checked_at",
+    ]
+    all_cols = _UPSERT_COLUMNS + timing
+    placeholders = [f"%({k})s" for k in all_cols] + ["now()", "now()"]
+    insert_cols = all_cols + ["enriched_at", "updated_at"]
+    updates = ", ".join(f"{col} = EXCLUDED.{col}" for col in all_cols if col != "cnpj")
     conn.execute(
-        """
-        INSERT INTO cnpj.digital_presenca (
-            cnpj, cnpj_basico, email_original, email_dominio, email_tipo,
-            site_url, site_ativo, site_http_status, site_titulo,
-            plataforma, plataformas_detectadas, plataforma_confianca,
-            instagram_url, whatsapp_url, linkedin_url,
-            decisor_nome, decisor_qualificacao,
-            faixa_faturamento_estimada, faturamento_fonte,
-            digital_score, digital_maturity, sinais,
-            enrich_status, enrich_error, enriched_at, updated_at
-        ) VALUES (
-            %(cnpj)s, %(cnpj_basico)s, %(email_original)s, %(email_dominio)s, %(email_tipo)s,
-            %(site_url)s, %(site_ativo)s, %(site_http_status)s, %(site_titulo)s,
-            %(plataforma)s, %(plataformas_detectadas)s, %(plataforma_confianca)s,
-            %(instagram_url)s, %(whatsapp_url)s, %(linkedin_url)s,
-            %(decisor_nome)s, %(decisor_qualificacao)s,
-            %(faixa_faturamento_estimada)s, %(faturamento_fonte)s,
-            %(digital_score)s, %(digital_maturity)s, %(sinais)s,
-            %(enrich_status)s, %(enrich_error)s, now(), now()
-        )
-        ON CONFLICT (cnpj) DO UPDATE SET
-            email_original = EXCLUDED.email_original,
-            email_dominio = EXCLUDED.email_dominio,
-            email_tipo = EXCLUDED.email_tipo,
-            site_url = EXCLUDED.site_url,
-            site_ativo = EXCLUDED.site_ativo,
-            site_http_status = EXCLUDED.site_http_status,
-            site_titulo = EXCLUDED.site_titulo,
-            plataforma = EXCLUDED.plataforma,
-            plataformas_detectadas = EXCLUDED.plataformas_detectadas,
-            plataforma_confianca = EXCLUDED.plataforma_confianca,
-            instagram_url = EXCLUDED.instagram_url,
-            whatsapp_url = EXCLUDED.whatsapp_url,
-            linkedin_url = EXCLUDED.linkedin_url,
-            decisor_nome = EXCLUDED.decisor_nome,
-            decisor_qualificacao = EXCLUDED.decisor_qualificacao,
-            faixa_faturamento_estimada = EXCLUDED.faixa_faturamento_estimada,
-            faturamento_fonte = EXCLUDED.faturamento_fonte,
-            digital_score = EXCLUDED.digital_score,
-            digital_maturity = EXCLUDED.digital_maturity,
-            sinais = EXCLUDED.sinais,
-            enrich_status = EXCLUDED.enrich_status,
-            enrich_error = EXCLUDED.enrich_error,
+        f"""
+        INSERT INTO cnpj.digital_presenca ({", ".join(insert_cols)})
+        VALUES ({", ".join(placeholders)})
+        ON CONFLICT (cnpj) DO UPDATE SET {updates},
             enriched_at = now(),
-            updated_at = now()
+            updated_at = now(),
+            processing_run_id = NULL,
+            processing_started_at = NULL
         """,
-        {
-            **result.__dict__,
-            "sinais": Jsonb(result.sinais),
-        },
+        params,
     )
 
 
-def fetch_pending(conn, limit: int, *, force: bool = False) -> list[dict]:
-    condition = "d.cnpj IS NULL OR d.enrich_status IN ('failed', 'pending')"
-    if force:
-        condition = "TRUE"
-    rows = conn.execute(
-        f"""
-        SELECT
-          v.cnpj,
-          v.cnpj_basico,
-          v.email,
-          v.telefone_1,
-          v.nome_fantasia,
-          v.porte,
-          v.opcao_mei,
-          v.opcao_simples,
-          v.capital_social
-        FROM cnpj.v_bi_varejo v
-        LEFT JOIN cnpj.digital_presenca d ON d.cnpj = v.cnpj
-        WHERE {condition}
-        ORDER BY v.updated_at DESC
-        LIMIT %s
+def fetch_pending(
+    conn,
+    limit: int,
+    *,
+    force: bool = False,
+    candidate_view: str = "cnpj.v_prospect_candidates",
+    exclude_cnpjs: set[str] | None = None,
+    after_cnpj: str | None = None,
+    enrichment_version: str = "v2",
+) -> list[dict]:
+    view = resolve_candidate_view(candidate_view)
+    exclude_cnpjs = exclude_cnpjs or set()
+    params: list[Any] = [enrichment_version]
+    conditions = [
+        """
+        (
+          d.cnpj IS NULL
+          OR d.enrichment_version IS DISTINCT FROM %s
+          OR d.enrich_status = 'pending'
+          OR (d.enrich_status = 'failed' AND (d.next_retry_at IS NULL OR d.next_retry_at <= now()))
+          OR (d.enrich_status = 'no_site' AND (d.next_retry_at IS NULL OR d.next_retry_at <= now()))
+        )
         """,
-        (limit,),
-    ).fetchall()
+        "(d.processing_run_id IS NULL OR d.processing_started_at < now() - interval '2 hours')",
+    ]
+    if force:
+        conditions = ["TRUE"]
+    if exclude_cnpjs:
+        conditions.append("v.cnpj <> ALL(%s)")
+        params.append(list(exclude_cnpjs))
+    if after_cnpj:
+        conditions.append("v.cnpj > %s")
+        params.append(after_cnpj)
+    params.append(limit)
+
+    query = sql.SQL(
+        """
+        SELECT
+          v.cnpj, v.cnpj_basico, v.email, v.telefone_1, v.nome_fantasia,
+          v.razao_social, v.uf, v.municipio_descricao, v.logradouro, v.cep,
+          v.cnae_fiscal_principal, v.porte, v.opcao_mei, v.opcao_simples, v.capital_social,
+          d.enrich_attempts, d.google_place_id, d.google_places_checked_at
+        FROM {view} v
+        LEFT JOIN cnpj.digital_presenca d ON d.cnpj = v.cnpj
+        WHERE {where_clause}
+        ORDER BY v.cnpj ASC
+        LIMIT %s
+        """
+    ).format(
+        view=sql.Identifier(*view.split(".")),
+        where_clause=sql.SQL(" AND ").join(sql.SQL(c) for c in conditions),
+    )
+    rows = conn.execute(query, params).fetchall()
     columns = [
         "cnpj",
         "cnpj_basico",
         "email",
         "telefone_1",
         "nome_fantasia",
+        "razao_social",
+        "uf",
+        "municipio_descricao",
+        "logradouro",
+        "cep",
+        "cnae_fiscal_principal",
         "porte",
         "opcao_mei",
         "opcao_simples",
         "capital_social",
+        "enrich_attempts",
+        "google_place_id",
+        "google_places_checked_at",
     ]
     return [dict(zip(columns, row)) for row in rows]
 
@@ -465,44 +559,235 @@ def fetch_pending(conn, limit: int, *, force: bool = False) -> list[dict]:
 def ensure_digital_presenca_schema(conn) -> None:
     row = conn.execute(
         """
-        SELECT COUNT(*) = 2
+        SELECT COUNT(*) >= 1
         FROM information_schema.columns
         WHERE table_schema = 'cnpj'
           AND table_name = 'digital_presenca'
-          AND column_name IN ('cnpj', 'cnpj_basico')
+          AND column_name = 'lead_score'
         """
     ).fetchone()[0]
     if not row:
-        raise RuntimeError(
-            "Schema cnpj.digital_presenca incompleto. Rode: python -m cnpj_etl.cli migrate"
-        )
+        raise RuntimeError("Schema v2 incompleto. Rode: python -m cnpj_etl.cli migrate")
 
 
-def run_enrichment(conn, settings: EnrichSettings | None = None, *, force: bool = False) -> dict[str, int]:
+def run_enrichment(
+    conn,
+    settings: EnrichSettings | None = None,
+    *,
+    force: bool = False,
+    exclude_cnpjs: set[str] | None = None,
+    after_cnpj: str | None = None,
+) -> dict[str, int]:
     settings = settings or EnrichSettings()
     ensure_digital_presenca_schema(conn)
-    rows = fetch_pending(conn, settings.batch_size, force=force)
+    if not acquire_enrichment_lock(conn):
+        log.warning("Outro processo de enriquecimento está ativo")
+        return {"processed": 0, "done": 0, "partial": 0, "no_site": 0, "failed": 0, "locked": 1}
+
+    run_id = conn.execute(
+        """
+        INSERT INTO etl.enrichment_runs (enrichment_version, status)
+        VALUES (%s, 'running') RETURNING id
+        """,
+        (settings.enrichment_version,),
+    ).fetchone()[0]
+    conn.commit()
+
     stats = {"processed": 0, "done": 0, "partial": 0, "no_site": 0, "failed": 0}
-    log.info("Enriquecimento digital: %s registros na fila", len(rows))
-    for row in rows:
-        try:
-            result = enrich_record(row, conn, settings)
-            upsert_result(conn, result)
-            conn.commit()
-            stats["processed"] += 1
-            status_key = result.enrich_status if result.enrich_status in stats else "partial"
-            stats[status_key] = stats.get(status_key, 0) + 1
-            log.info(
-                "%s score=%s plataforma=%s site=%s status=%s",
-                result.cnpj,
-                result.digital_score,
-                result.plataforma or "-",
-                result.site_url or "-",
-                result.enrich_status,
-            )
-        except Exception as exc:
-            conn.rollback()
-            stats["failed"] += 1
-            log.exception("Falha ao enriquecer %s: %s", row["cnpj"], exc)
-        time.sleep(settings.delay_seconds)
+    if exclude_cnpjs is None:
+        processed_cnpjs: set[str] = set()
+    else:
+        processed_cnpjs = exclude_cnpjs
+    rows: list[dict] = []
+
+    try:
+        rows = fetch_pending(
+            conn,
+            settings.batch_size,
+            force=force,
+            candidate_view=settings.candidate_view,
+            exclude_cnpjs=processed_cnpjs,
+            after_cnpj=after_cnpj,
+            enrichment_version=settings.enrichment_version,
+        )
+        log.info("Enriquecimento digital: %s registros na fila", len(rows))
+        for row in rows:
+            cnpj = row["cnpj"]
+            if cnpj in processed_cnpjs:
+                continue
+            processed_cnpjs.add(cnpj)
+            try:
+                result = enrich_record(row, conn, settings)
+                upsert_result(conn, result)
+                conn.commit()
+                stats["processed"] += 1
+                status_key = result.enrich_status if result.enrich_status in stats else "partial"
+                stats[status_key] = stats.get(status_key, 0) + 1
+            except Exception as exc:
+                conn.rollback()
+                stats["failed"] += 1
+                log.exception("Falha ao enriquecer %s: %s", cnpj, exc)
+            import time
+
+            time.sleep(settings.delay_seconds)
+    finally:
+        conn.execute(
+            """
+            UPDATE etl.enrichment_runs
+            SET finished_at = now(), status = 'done',
+                processed = %s, done = %s, partial = %s, no_site = %s, failed = %s
+            WHERE id = %s
+            """,
+            (
+                stats["processed"],
+                stats.get("done", 0),
+                stats.get("partial", 0),
+                stats.get("no_site", 0),
+                stats.get("failed", 0),
+                run_id,
+            ),
+        )
+        conn.commit()
+        release_enrichment_lock(conn)
+
+    stats["processed_cnpjs"] = len(processed_cnpjs)
+    if rows:
+        stats["last_cnpj"] = rows[-1]["cnpj"]
     return stats
+
+
+def run_enrichment_until_empty(
+    conn,
+    settings: EnrichSettings | None = None,
+    *,
+    force: bool = False,
+) -> dict[str, int]:
+    settings = settings or EnrichSettings()
+    totals = {"processed": 0, "done": 0, "partial": 0, "no_site": 0, "failed": 0, "rounds": 0}
+    processed: set[str] = set()
+    after_cnpj: str | None = None
+
+    for _ in range(settings.max_rounds):
+        stats = run_enrichment(
+            conn,
+            settings,
+            force=force,
+            exclude_cnpjs=processed,
+            after_cnpj=after_cnpj if force else None,
+        )
+        totals["rounds"] += 1
+        for key in ("processed", "done", "partial", "no_site", "failed"):
+            totals[key] += stats.get(key, 0)
+        if stats.get("locked"):
+            break
+        batch_count = stats.get("processed", 0)
+        if batch_count == 0:
+            break
+        if force and stats.get("last_cnpj"):
+            after_cnpj = stats["last_cnpj"]
+    log.info("Enriquecimento finalizado após %s rodadas: %s", totals["rounds"], totals)
+    return totals
+
+
+def rescore_all(conn, *, version: str = "v2", batch_size: int = 500) -> dict[str, int]:
+    columns = [
+        "cnpj",
+        "cnpj_basico",
+        "email_tipo",
+        "site_valid",
+        "site_reachable",
+        "site_match_status",
+        "site_validation_reasons",
+        "instagram_url",
+        "linkedin_url",
+        "whatsapp_valid",
+        "whatsapp_detected",
+        "whatsapp_confidence",
+        "google_place_match_score",
+        "google_business_status",
+        "plataforma",
+        "plataforma_confianca",
+        "has_product_page",
+        "has_product_schema",
+        "has_price",
+        "has_cart",
+        "has_checkout",
+        "has_add_to_cart",
+        "has_catalog",
+        "has_search",
+        "has_customer_login",
+        "has_chat",
+        "chat_provider",
+        "has_contact_form",
+        "transactional_signals",
+        "domain_is_shared",
+        "sinais",
+        "cnae_fiscal_principal",
+        "commerce_maturity",
+    ]
+    total = 0
+    while True:
+        rows = conn.execute(
+            f"""
+            SELECT {", ".join(f"v.{c}" if c == "cnae_fiscal_principal" else f"d.{c}" for c in columns)}
+            FROM cnpj.digital_presenca d
+            LEFT JOIN cnpj.v_prospect_candidates v ON v.cnpj = d.cnpj
+            WHERE d.score_version IS DISTINCT FROM %s
+            ORDER BY d.cnpj
+            LIMIT %s
+            """,
+            (version, batch_size),
+        ).fetchall()
+        if not rows:
+            break
+        for raw in rows:
+            item = dict(zip(columns, raw))
+            result = rescore_from_row(item)
+            conn.execute(
+                """
+                UPDATE cnpj.digital_presenca SET
+                  presence_score=%s, commerce_score=%s, fit_score=%s, pain_score=%s,
+                  confidence_score=%s, lead_score=%s,
+                  presence_maturity=%s, commerce_maturity=%s, lead_classification=%s,
+                  digital_score=%s, digital_maturity=%s, score_version=%s, updated_at=now()
+                WHERE cnpj=%s
+                """,
+                (
+                    result.presence_score,
+                    result.commerce_score,
+                    result.fit_score,
+                    result.pain_score,
+                    result.confidence_score,
+                    result.lead_score,
+                    result.presence_maturity,
+                    result.commerce_maturity,
+                    result.lead_classification,
+                    result.digital_score,
+                    result.digital_maturity,
+                    result.score_version,
+                    result.cnpj,
+                ),
+            )
+            total += 1
+        conn.commit()
+    return {"rescored": total}
+
+
+def requeue_enrichment(conn, *, reason: str = "version_upgrade", target_version: str = "v2") -> int:
+    result = conn.execute(
+        """
+        UPDATE cnpj.digital_presenca
+        SET next_retry_at = now(),
+            retry_reason = %s,
+            enrich_status = CASE
+              WHEN enrich_status IN ('done', 'partial') THEN 'pending'
+              ELSE enrich_status
+            END,
+            enrichment_version = NULL
+        WHERE enrichment_version IS DISTINCT FROM %s
+           OR score_version IS DISTINCT FROM %s
+        """,
+        (reason, target_version, target_version),
+    )
+    conn.commit()
+    return result.rowcount

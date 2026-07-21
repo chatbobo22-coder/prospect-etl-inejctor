@@ -5,9 +5,16 @@ from pathlib import Path
 
 from .config import Settings
 from .database import Database
-from .digital_enricher import EnrichSettings, run_enrichment
+from .digital_enricher import (
+    EnrichSettings,
+    requeue_enrichment,
+    rescore_all,
+    run_enrichment,
+    run_enrichment_until_empty,
+)
 from .ibge_population import ensure_municipios_populacao
 from .pipeline import run
+from .prospect import promote_qualified
 from .source import RfbSource
 
 
@@ -27,6 +34,25 @@ def main():
     enrich = sub.add_parser("enrich-digital", help="Enriquece presença digital dos prospects")
     enrich.add_argument("--batch-size", type=int, help="Quantidade de CNPJs por execução")
     enrich.add_argument("--force", action="store_true", help="Reprocessa registros já enriquecidos")
+    enrich.add_argument(
+        "--until-empty",
+        action="store_true",
+        help="Repete enriquecimento até esvaziar a fila (ou ENRICH_MAX_ROUNDS)",
+    )
+    sub.add_parser(
+        "qualify-prospects",
+        help="Promove enriquecidos qualificados para cnpj.prospectos_qualificados",
+    )
+    prospect = sub.add_parser(
+        "prospect-pipeline",
+        help="Enriquece até esvaziar fila e qualifica prospects (pós-ETL)",
+    )
+    prospect.add_argument("--batch-size", type=int, help="CNPJs por rodada de enriquecimento")
+    prospect.add_argument("--force-enrich", action="store_true", help="Reprocessa todos no enrich")
+    rescore = sub.add_parser("rescore-digital", help="Recalcula scores v2 sem HTTP")
+    rescore.add_argument("--version", default="v2", help="Versão alvo do score")
+    requeue = sub.add_parser("requeue-enrichment", help="Recoloca registros antigos na fila")
+    requeue.add_argument("--reason", default="version_upgrade", help="Motivo do requeue")
     execute = sub.add_parser("run", help="Executa uma sincronização")
     execute.add_argument("--competence", help="Competência YYYY-MM; padrão: mais recente")
     execute.add_argument("--force", action="store_true", help="Reprocessa arquivos concluídos")
@@ -51,12 +77,16 @@ def main():
             raise SystemExit(
                 "Filtros CNAE desabilitados. Remova DISABLE_FILTERS ou defina FILTER_CNAES."
             )
-        logging.info("CNAEs (%s): %s", len(settings.filter_cnaes), ", ".join(sorted(settings.filter_cnaes)))
+        logging.info(
+            "CNAEs (%s): %s", len(settings.filter_cnaes), ", ".join(sorted(settings.filter_cnaes))
+        )
         logging.info("Ativas only: %s", settings.filter_active_only)
         logging.info("CNAE principal only: %s", not settings.filter_include_secondary_cnae)
         logging.info("Nome fantasia obrigatório: %s", settings.filter_require_nome_fantasia)
         logging.info("Telefone válido obrigatório: %s", settings.filter_require_telefone)
-        logging.info("População mínima município: %s", settings.filter_min_population or "desligado")
+        logging.info(
+            "População mínima município: %s", settings.filter_min_population or "desligado"
+        )
         if settings.filter_ufs:
             logging.warning(
                 "FILTER_UF ativo (%s) — remova a variable FILTER_UF no GitHub para carga nacional",
@@ -75,15 +105,43 @@ def main():
         batch_size = args.batch_size or int(os.getenv("ENRICH_BATCH_SIZE", "300"))
         settings_obj = EnrichSettings(batch_size=batch_size)
         with db.connect() as conn:
-            stats = run_enrichment(conn, settings_obj, force=args.force)
+            if args.until_empty:
+                stats = run_enrichment_until_empty(conn, settings_obj, force=args.force)
+            else:
+                stats = run_enrichment(conn, settings_obj, force=args.force)
         logging.info("Enriquecimento concluído: %s", stats)
+    elif args.command == "qualify-prospects":
+        db.migrate(sql_dir)
+        with db.connect() as conn:
+            stats = promote_qualified(conn)
+        logging.info("Qualificação concluída: %s", stats)
+    elif args.command == "prospect-pipeline":
+        db.migrate(sql_dir)
+        batch_size = args.batch_size or int(os.getenv("ENRICH_BATCH_SIZE", "500"))
+        settings_obj = EnrichSettings(batch_size=batch_size)
+        with db.connect() as conn:
+            enrich_stats = run_enrichment_until_empty(conn, settings_obj, force=args.force_enrich)
+            qualify_stats = promote_qualified(conn)
+        logging.info("Pipeline prospect: enrich=%s qualify=%s", enrich_stats, qualify_stats)
+    elif args.command == "rescore-digital":
+        db.migrate(sql_dir)
+        with db.connect() as conn:
+            stats = rescore_all(conn, version=args.version)
+        logging.info("Rescore concluído: %s", stats)
+    elif args.command == "requeue-enrichment":
+        db.migrate(sql_dir)
+        with db.connect() as conn:
+            count = requeue_enrichment(conn, reason=args.reason)
+        logging.info("Requeue: %s registros", count)
     elif args.command == "reset-load":
         if not args.yes:
             raise SystemExit("Use --yes para confirmar apagamento dos dados CNPJ.")
         with db.connect() as conn:
             db.reset_load(conn)
             conn.commit()
-        logging.info("Base CNPJ limpa — próximo run fará carga completa (use --force se etl.files voltar)")
+        logging.info(
+            "Base CNPJ limpa — próximo run fará carga completa (use --force se etl.files voltar)"
+        )
     elif args.command == "migrate":
         db.migrate(sql_dir)
     else:

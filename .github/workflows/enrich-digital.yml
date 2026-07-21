@@ -17,7 +17,7 @@ on:
         default: false
 
 concurrency:
-  group: digital-enrichment
+  group: cnpj-enrichment-write
   cancel-in-progress: false
 
 jobs:
@@ -60,9 +60,18 @@ jobs:
           ENRICH_BATCH_SIZE: ${{ inputs.batch_size || '300' }}
           ENRICH_DELAY_SECONDS: "0.4"
           ENRICH_REQUEST_TIMEOUT: "15"
+          ENRICHMENT_VERSION: "v2"
+          ENRICH_NO_SITE_RETRY_DAYS: "30"
+          ENRICH_FAILED_RETRY_HOURS: "24"
+          CRAWLER_MAX_PAGES: "8"
           ENRICH_BRASILAPI: "false"
+          GOOGLE_PLACES_ENABLED: "false"
+          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+          GOOGLE_PLACES_MAX_REQUESTS_PER_RUN: "500"
           ENRICH_EXTERNAL_API_PROVIDER: ${{ vars.ENRICH_EXTERNAL_API_PROVIDER }}
           ENRICH_EXTERNAL_API_KEY: ${{ secrets.ENRICH_EXTERNAL_API_KEY }}
+          PROSPECT_MIN_CONFIDENCE_SCORE: "60"
+          PROSPECT_MIN_LEAD_SCORE: "60"
         run: |
           args=""
           if [ "${{ inputs.force }}" = "true" ]; then

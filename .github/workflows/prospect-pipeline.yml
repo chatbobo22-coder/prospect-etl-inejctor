@@ -1,0 +1,165 @@
+name: Prospect Pipeline
+
+on:
+  schedule:
+    # Diário às 03:00 UTC (00:00 BRT)
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      competence:
+        description: "Competência YYYY-MM (vazio = mais recente)"
+        required: false
+        type: string
+      force_etl:
+        description: "Reprocessa ZIPs da Receita (incrementa base, não apaga)"
+        required: false
+        type: boolean
+        default: true
+      force_enrich:
+        description: "Reprocessa enriquecimento digital de todos os candidatos"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: cnpj-enrichment-write
+  cancel-in-progress: false
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Load DATABASE_URL
+        env:
+          SECRET_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          VAR_DATABASE_URL: ${{ vars.DATABASE_URL }}
+        run: |
+          if [ -n "${SECRET_DATABASE_URL:-}" ]; then
+            echo "DATABASE_URL=${SECRET_DATABASE_URL}" >> "$GITHUB_ENV"
+          elif [ -n "${VAR_DATABASE_URL:-}" ]; then
+            echo "DATABASE_URL=${VAR_DATABASE_URL}" >> "$GITHUB_ENV"
+          else
+            echo "::error::DATABASE_URL não encontrado."
+            exit 1
+          fi
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install .
+
+      - name: Configure pipeline (carga ampla + enriquecimento máximo)
+        env:
+          SPEEDIO_KEY: ${{ secrets.ENRICH_EXTERNAL_API_KEY }}
+        run: |
+          DEFAULT_CNAES="4530703,4744099,4751201,4752100,4753900,4754701,4755503,4759899,4763601,4763602,4772500,4781400,4782201,4782202,4783101,4783102,4789001,4791201"
+          echo "FILTER_ACTIVE_ONLY=true" >> "$GITHUB_ENV"
+          echo "FILTER_REQUIRE_NOME_FANTASIA=false" >> "$GITHUB_ENV"
+          echo "FILTER_REQUIRE_TELEFONE=false" >> "$GITHUB_ENV"
+          echo "FILTER_MIN_POPULATION=0" >> "$GITHUB_ENV"
+          echo "FILTER_CNAE_INCLUDE_SECONDARY=false" >> "$GITHUB_ENV"
+          echo "IBGE_POPULATION_YEAR=2024" >> "$GITHUB_ENV"
+          echo "ENRICH_CANDIDATE_VIEW=cnpj.v_prospect_candidates" >> "$GITHUB_ENV"
+          echo "ENRICH_BATCH_SIZE=500" >> "$GITHUB_ENV"
+          echo "ENRICH_MAX_ROUNDS=50" >> "$GITHUB_ENV"
+          echo "ENRICH_BRASILAPI=true" >> "$GITHUB_ENV"
+          echo "ENRICH_DELAY_SECONDS=0.3" >> "$GITHUB_ENV"
+          echo "PROSPECT_MIN_CONFIDENCE_SCORE=60" >> "$GITHUB_ENV"
+          echo "PROSPECT_MIN_LEAD_SCORE=60" >> "$GITHUB_ENV"
+          echo "ENRICHMENT_VERSION=v2" >> "$GITHUB_ENV"
+          echo "ENRICH_NO_SITE_RETRY_DAYS=30" >> "$GITHUB_ENV"
+          echo "CRAWLER_MAX_PAGES=8" >> "$GITHUB_ENV"
+          echo "GOOGLE_PLACES_ENABLED=false" >> "$GITHUB_ENV"
+          if [ -n "${{ secrets.GOOGLE_PLACES_API_KEY }}" ]; then
+            echo "GOOGLE_PLACES_ENABLED=true" >> "$GITHUB_ENV"
+            echo "GOOGLE_PLACES_API_KEY=${{ secrets.GOOGLE_PLACES_API_KEY }}" >> "$GITHUB_ENV"
+            echo "GOOGLE_PLACES_MAX_REQUESTS_PER_RUN=500" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${{ vars.FILTER_CNAES }}" ]; then
+            echo "FILTER_CNAES=${{ vars.FILTER_CNAES }}" >> "$GITHUB_ENV"
+          else
+            echo "FILTER_CNAES=$DEFAULT_CNAES" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${SPEEDIO_KEY:-}" ]; then
+            echo "ENRICH_EXTERNAL_API_KEY=${SPEEDIO_KEY}" >> "$GITHUB_ENV"
+            echo "ENRICH_EXTERNAL_API_PROVIDER=speedio" >> "$GITHUB_ENV"
+          fi
+
+      - name: Migrate and sync IBGE
+        run: python -m cnpj_etl.cli sync-ibge
+
+      - name: Run ETL (carga ampla varejo ativo)
+        env:
+          KEEP_DOWNLOADS: "false"
+        run: |
+          args="--auto"
+          if [ -n "${{ inputs.competence }}" ]; then
+            args="$args --competence ${{ inputs.competence }}"
+          fi
+          if [ "${{ inputs.force_etl }}" = "true" ]; then
+            args="$args --force"
+          fi
+          python -m cnpj_etl.cli run $args
+
+      - name: Enrich + qualify prospects
+        run: |
+          args=""
+          if [ "${{ inputs.force_enrich }}" = "true" ]; then
+            args="--force-enrich"
+          fi
+          python -m cnpj_etl.cli prospect-pipeline $args
+
+      - name: Summary counts
+        run: |
+          python - <<'PY'
+          import os
+          import psycopg
+          url = os.environ["DATABASE_URL"]
+          with psycopg.connect(url) as conn:
+              est = conn.execute("SELECT COUNT(*) FROM cnpj.estabelecimentos").fetchone()[0]
+              cand = conn.execute("SELECT COUNT(*) FROM cnpj.v_prospect_candidates").fetchone()[0]
+              enriched = conn.execute(
+                  "SELECT COUNT(*) FROM cnpj.digital_presenca WHERE enrich_status IN ('done','partial')"
+              ).fetchone()[0]
+              sites_valid = conn.execute(
+                  "SELECT COUNT(*) FROM cnpj.digital_presenca WHERE site_valid = true"
+              ).fetchone()[0]
+              ecommerce_conf = conn.execute(
+                  "SELECT COUNT(*) FROM cnpj.digital_presenca WHERE commerce_maturity = 'ecommerce_confirmado'"
+              ).fetchone()[0]
+              whatsapp_conf = conn.execute(
+                  "SELECT COUNT(*) FROM cnpj.digital_presenca WHERE whatsapp_valid = true"
+              ).fetchone()[0]
+              qualified = conn.execute(
+                  "SELECT COUNT(*) FROM cnpj.prospectos_qualificados WHERE qualification_status = 'qualified'"
+              ).fetchone()[0]
+              review = conn.execute(
+                  "SELECT COUNT(*) FROM cnpj.prospectos_qualificados WHERE qualification_status = 'review_required'"
+              ).fetchone()[0]
+              rejected = conn.execute(
+                  "SELECT COUNT(*) FROM cnpj.prospectos_qualificados WHERE qualification_status = 'rejected'"
+              ).fetchone()[0]
+              gplaces = conn.execute(
+                  "SELECT COALESCE(SUM(google_places_requests),0) FROM etl.enrichment_runs "
+                  "WHERE started_at > now() - interval '1 day'"
+              ).fetchone()[0]
+          print(f"estabelecimentos={est}")
+          print(f"candidatos_varejo={cand}")
+          print(f"enriquecidos={enriched}")
+          print(f"sites_validados={sites_valid}")
+          print(f"ecommerce_confirmado={ecommerce_conf}")
+          print(f"whatsapp_confirmado={whatsapp_conf}")
+          print(f"qualificados={qualified}")
+          print(f"review_required={review}")
+          print(f"rejeitados={rejected}")
+          print(f"google_places_requests_24h={gplaces}")
+          PY

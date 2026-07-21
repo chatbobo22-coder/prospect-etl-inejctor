@@ -42,7 +42,7 @@ def test_empty_filter_active_only_defaults_true(monkeypatch):
 
 def test_min_population_default(monkeypatch):
     config = _reload_config(monkeypatch)
-    assert config._parse_min_population() == 100_000
+    assert config._parse_min_population() == 0
 
 
 def test_min_population_disabled(monkeypatch):

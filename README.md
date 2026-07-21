@@ -158,6 +158,27 @@ LIMIT 100;
 - Mantenha backup do PostgreSQL. Os ZIPs podem ser removidos após uma carga bem-sucedida se precisar economizar disco.
 - Os arquivos da Receita usam `;`, aspas e codificação Latin-1; o leitor já trata esse formato.
 
+## Enriquecimento e prospecção v2
+
+Após o ETL, o pipeline enriquece candidatos (`cnpj.v_prospect_candidates`), valida sites, detecta e-commerce real e qualifica prospects.
+
+```bash
+python -m cnpj_etl.cli migrate
+python -m cnpj_etl.cli prospect-pipeline
+python -m cnpj_etl.cli rescore-digital --version v2
+python -m cnpj_etl.cli requeue-enrichment --reason version_upgrade
+```
+
+Documentação completa: [docs/ENRICHMENT.md](docs/ENRICHMENT.md).
+
+Consulta de prospects qualificados:
+
+```sql
+SELECT * FROM cnpj.v_prospectos_outreach_v2
+WHERE qualification_status = 'qualified'
+ORDER BY lead_score DESC;
+```
+
 ## Fonte
 
 O projeto utiliza os arquivos públicos da Receita Federal via **Nextcloud** (`arquivos.receitafederal.gov.br/index.php/s/YggdBLfdninEJX9`), com fallback para o diretório HTML legado se `RFB_BASE_URL` apontar para a URL antiga. Confira o leiaute oficial antes de alterações futuras, pois a Receita pode mudar nomes ou colunas.

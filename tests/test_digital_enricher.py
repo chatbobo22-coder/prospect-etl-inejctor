@@ -1,11 +1,8 @@
-from cnpj_etl.digital_enricher import (
-    EnrichResult,
-    calculate_score,
-    classify_email,
-    detect_platforms,
-    estimate_revenue_band,
-    extract_social_links,
-)
+from cnpj_etl.digital_enricher import extract_social_links
+from cnpj_etl.enrichment.models import EnrichResult
+from cnpj_etl.enrichment.scoring import calculate_score, estimate_revenue_band
+from cnpj_etl.enrichment.email import classify_email
+from cnpj_etl.enrichment.commerce import detect_platforms
 
 
 def test_classify_corporate_email():
@@ -35,10 +32,10 @@ def test_detect_vtex_and_nuvemshop():
 
 
 def test_extract_whatsapp_instagram():
-    html = '''
+    html = """
       <a href="https://instagram.com/minhaloja">IG</a>
       <a href="https://wa.me/5511999998888">Zap</a>
-    '''
+    """
     links = extract_social_links(html, "https://loja.com.br")
     assert links["instagram"] == "https://instagram.com/minhaloja"
     assert links["whatsapp"] == "https://wa.me/5511999998888"
@@ -49,19 +46,39 @@ def test_estimate_mei():
         porte="01", opcao_mei="S", opcao_simples="N", capital_social="1000"
     )
     assert "MEI" in faixa
-    assert fonte == "heuristica_mei"
+    assert fonte == "heuristica_porte_receita"
 
 
-def test_digital_score_ecommerce():
+def test_digital_score_requires_strong_commerce_for_confirmado():
     result = EnrichResult(
         cnpj="123",
         cnpj_basico="12345678",
         email_tipo="corporativo",
-        site_ativo=True,
+        site_valid=True,
+        site_reachable=True,
         plataforma="shopify",
-        whatsapp_url="https://wa.me/5511",
+        plataforma_confianca=95,
+        whatsapp_valid=True,
+        whatsapp_url="https://wa.me/5511999998888",
         decisor_nome="João",
+        has_product_schema=True,
+        has_price=True,
+        has_add_to_cart=True,
+        has_cart=True,
     )
     score, maturity = calculate_score(result)
-    assert score >= 75
+    assert result.commerce_score >= 60
     assert maturity == "ecommerce_confirmado"
+
+
+def test_presence_only_not_ecommerce_confirmado():
+    result = EnrichResult(
+        cnpj="123",
+        cnpj_basico="12345678",
+        site_valid=True,
+        instagram_url="https://instagram.com/loja",
+        whatsapp_valid=True,
+        whatsapp_url="https://wa.me/5511",
+    )
+    _, maturity = calculate_score(result)
+    assert maturity != "ecommerce_confirmado"
