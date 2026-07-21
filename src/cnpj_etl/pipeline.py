@@ -111,6 +111,11 @@ def run(
             prep_conn.commit()
         filter_ctx = build_filter_context(settings, prep_conn)
     competence = competence or source.latest_competence()
+    if force:
+        log.info(
+            "Modo force — reprocessa ZIPs com filtros atuais (upsert: novos entram, "
+            "existentes permanecem; base NÃO é apagada)"
+        )
     all_files = source.list_files(competence)
     allowed = settings.resolved_file_types()
     files = [f for f in all_files if not allowed or f.file_type in allowed]
@@ -226,10 +231,10 @@ def run(
                 (processed, total, run_id),
             )
             lock_conn.commit()
-            if processed == 0 and file_total > 0:
+            if processed == 0 and file_total > 0 and not force:
                 log.warning(
-                    "Nenhum arquivo reprocessado (%s marcados como concluídos). "
-                    "Para recarregar com filtros novos: reset-load --yes + run --auto --force",
+                    "Nenhum arquivo novo (%s já concluídos). Para incrementar com filtros "
+                    "atualizados sem apagar a base, rode com --force",
                     file_total,
                 )
             return total

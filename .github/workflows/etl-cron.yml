@@ -11,12 +11,12 @@ on:
         required: false
         type: string
       force:
-        description: "Reprocessar arquivos já concluídos"
+        description: "Reprocessa ZIPs e incrementa base (não apaga dados existentes)"
         required: false
         type: boolean
         default: false
       full_reload:
-        description: "Apaga dados CNPJ e reprocessa tudo do zero"
+        description: "APAGA tudo e recarrega do zero (só se quiser zerar a base)"
         required: false
         type: boolean
         default: false
