@@ -90,8 +90,7 @@ def sync_municipios_populacao(conn, *, year: int = 2024) -> int:
     rows = build_population_rows(year)
     if not rows:
         raise RuntimeError(f"Nenhuma linha de população IBGE retornada para {year}")
-    conn.executemany(
-        """
+    upsert_sql = """
         INSERT INTO cnpj.municipios_populacao
             (codigo_ibge, uf, codigo, nome, populacao, ano_referencia, updated_at)
         VALUES (%(codigo_ibge)s, %(uf)s, %(codigo)s, %(nome)s, %(populacao)s, %(ano_referencia)s, now())
@@ -102,9 +101,9 @@ def sync_municipios_populacao(conn, *, year: int = 2024) -> int:
             populacao = EXCLUDED.populacao,
             ano_referencia = EXCLUDED.ano_referencia,
             updated_at = now()
-        """,
-        rows,
-    )
+    """
+    with conn.cursor() as cur:
+        cur.executemany(upsert_sql, rows)
     over_min = conn.execute(
         "SELECT COUNT(*) FROM cnpj.municipios_populacao WHERE populacao >= %s",
         (100_000,),
