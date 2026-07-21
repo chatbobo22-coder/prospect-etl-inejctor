@@ -1,0 +1,68 @@
+name: Digital Enrichment
+
+on:
+  schedule:
+    # Diário às 07:00 UTC (04:00 BRT) — após o ETL noturno
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+    inputs:
+      batch_size:
+        description: "CNPJs por execução"
+        required: false
+        default: "300"
+      force:
+        description: "Reprocessar registros já enriquecidos"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: digital-enrichment
+  cancel-in-progress: false
+
+jobs:
+  enrich:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Load DATABASE_URL
+        env:
+          SECRET_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          VAR_DATABASE_URL: ${{ vars.DATABASE_URL }}
+        run: |
+          if [ -n "${SECRET_DATABASE_URL:-}" ]; then
+            echo "DATABASE_URL=${SECRET_DATABASE_URL}" >> "$GITHUB_ENV"
+          elif [ -n "${VAR_DATABASE_URL:-}" ]; then
+            echo "DATABASE_URL=${VAR_DATABASE_URL}" >> "$GITHUB_ENV"
+          else
+            echo "::error::DATABASE_URL não encontrado."
+            exit 1
+          fi
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install .
+
+      - name: Enrich digital presence
+        env:
+          ENRICH_BATCH_SIZE: ${{ inputs.batch_size || '300' }}
+          ENRICH_DELAY_SECONDS: "0.4"
+          ENRICH_REQUEST_TIMEOUT: "15"
+          ENRICH_BRASILAPI: "false"
+          ENRICH_EXTERNAL_API_PROVIDER: ${{ vars.ENRICH_EXTERNAL_API_PROVIDER }}
+          ENRICH_EXTERNAL_API_KEY: ${{ secrets.ENRICH_EXTERNAL_API_KEY }}
+        run: |
+          args=""
+          if [ "${{ inputs.force }}" = "true" ]; then
+            args="--force"
+          fi
+          python -m cnpj_etl.cli enrich-digital $args

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .config import Settings
 from .database import Database
+from .digital_enricher import EnrichSettings, run_enrichment
 from .ibge_population import ensure_municipios_populacao
 from .pipeline import run
 from .source import RfbSource
@@ -17,6 +18,9 @@ def main():
     sub.add_parser("check-db", help="Testa a conexão com o PostgreSQL")
     sub.add_parser("verify-filters", help="Valida filtros de carga antes do ETL")
     sub.add_parser("sync-ibge", help="Baixa população municipal do IBGE para o banco")
+    enrich = sub.add_parser("enrich-digital", help="Enriquece presença digital dos prospects")
+    enrich.add_argument("--batch-size", type=int, help="Quantidade de CNPJs por execução")
+    enrich.add_argument("--force", action="store_true", help="Reprocessa registros já enriquecidos")
     execute = sub.add_parser("run", help="Executa uma sincronização")
     execute.add_argument("--competence", help="Competência YYYY-MM; padrão: mais recente")
     execute.add_argument("--force", action="store_true", help="Reprocessa arquivos concluídos")
@@ -55,6 +59,13 @@ def main():
             total = ensure_municipios_populacao(conn, year=settings.ibge_population_year)
             conn.commit()
         logging.info("IBGE sincronizado: %s municípios", total)
+    elif args.command == "enrich-digital":
+        db.migrate(sql_dir)
+        batch_size = args.batch_size or int(os.getenv("ENRICH_BATCH_SIZE", "300"))
+        settings_obj = EnrichSettings(batch_size=batch_size)
+        with db.connect() as conn:
+            stats = run_enrichment(conn, settings_obj, force=args.force)
+        logging.info("Enriquecimento concluído: %s", stats)
     elif args.command == "migrate":
         db.migrate(sql_dir)
     else:
