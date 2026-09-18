@@ -11,3 +11,4 @@ data/
 *.csv
 prospects_export.*
 reports/
+.vercel

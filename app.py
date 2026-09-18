@@ -1,8 +1,15 @@
 import logging
 import os
+from pathlib import Path
+import re
+import sys
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Security
 from fastapi.security import APIKeyHeader
+from pydantic import BaseModel, Field, field_validator
+import requests
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from cnpj_etl.config import Settings
 from cnpj_etl.database import Database
@@ -11,6 +18,73 @@ log = logging.getLogger(__name__)
 app = FastAPI(title="CNPJ ETL", version="2.0.0")
 
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+class InjectorConfig(BaseModel):
+    competence: str = ""
+    cnaes: str = ""
+    ufs: str = ""
+    active_only: bool = True
+    include_secondary_cnae: bool = False
+    require_nome_fantasia: bool = False
+    require_telefone: bool = False
+    min_population: int = Field(default=0, ge=0)
+    force_etl: bool = False
+    force_enrich: bool = False
+    enrich_batch_size: int = Field(default=500, ge=1, le=5000)
+
+    @field_validator("competence")
+    @classmethod
+    def valid_competence(cls, value: str) -> str:
+        value = value.strip()
+        if value and not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", value):
+            raise ValueError("Competência deve usar o formato YYYY-MM")
+        return value
+
+    @field_validator("cnaes")
+    @classmethod
+    def valid_cnaes(cls, value: str) -> str:
+        values = [item.strip() for item in value.split(",") if item.strip()]
+        if any(not re.fullmatch(r"\d{7}", item) for item in values):
+            raise ValueError("Cada CNAE deve conter sete dígitos")
+        return ",".join(dict.fromkeys(values))
+
+    @field_validator("ufs")
+    @classmethod
+    def valid_ufs(cls, value: str) -> str:
+        allowed = {
+            "AC",
+            "AL",
+            "AP",
+            "AM",
+            "BA",
+            "CE",
+            "DF",
+            "ES",
+            "GO",
+            "MA",
+            "MT",
+            "MS",
+            "MG",
+            "PA",
+            "PB",
+            "PR",
+            "PE",
+            "PI",
+            "RJ",
+            "RN",
+            "RS",
+            "RO",
+            "RR",
+            "SC",
+            "SP",
+            "SE",
+            "TO",
+        }
+        values = [item.strip().upper() for item in value.split(",") if item.strip()]
+        if any(item not in allowed for item in values):
+            raise ValueError("Uma ou mais UFs são inválidas")
+        return ",".join(dict.fromkeys(values))
 
 
 def _require_api_key(api_key: str | None = Security(_api_key_header)) -> None:
@@ -23,6 +97,27 @@ def _require_api_key(api_key: str | None = Security(_api_key_header)) -> None:
 
 def _service_error(status: int = 503) -> HTTPException:
     return HTTPException(status_code=status, detail="Service temporarily unavailable")
+
+
+def _github_headers(require_token: bool = False) -> dict[str, str]:
+    token = os.getenv("GITHUB_WORKFLOW_TOKEN", "").strip()
+    if require_token and not token:
+        raise HTTPException(
+            status_code=503,
+            detail="GITHUB_WORKFLOW_TOKEN não configurado no Injector",
+        )
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "mestrelead-injector",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _github_repo() -> str:
+    return os.getenv("GITHUB_REPOSITORY", "chatbobo22-coder/prospect-etl-inejctor")
 
 
 @app.get("/")
@@ -38,6 +133,87 @@ def root():
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/config", dependencies=[Depends(_require_api_key)])
+def injector_config():
+    settings = Settings()
+    return {
+        "config": {
+            "source": "Receita Federal - Dados Abertos do CNPJ",
+            "base_url": settings.base_url,
+            "competence": "",
+            "cnaes": ",".join(sorted(settings.filter_cnaes)),
+            "ufs": ",".join(sorted(settings.filter_ufs)),
+            "active_only": settings.filter_active_only,
+            "include_secondary_cnae": settings.filter_include_secondary_cnae,
+            "require_nome_fantasia": settings.filter_require_nome_fantasia,
+            "require_telefone": settings.filter_require_telefone,
+            "min_population": settings.filter_min_population,
+            "force_etl": False,
+            "force_enrich": False,
+            "enrich_batch_size": int(os.getenv("ENRICH_BATCH_SIZE", "500")),
+        }
+    }
+
+
+@app.post("/api/start", dependencies=[Depends(_require_api_key)], status_code=202)
+def start_injector(config: InjectorConfig):
+    workflow = os.getenv("GITHUB_WORKFLOW_FILE", "prospect-pipeline.yml")
+    response = requests.post(
+        f"https://api.github.com/repos/{_github_repo()}/actions/workflows/{workflow}/dispatches",
+        headers=_github_headers(require_token=True),
+        json={
+            "ref": os.getenv("GITHUB_WORKFLOW_REF", "main"),
+            "inputs": {
+                "competence": config.competence,
+                "filter_cnaes": config.cnaes,
+                "filter_ufs": config.ufs,
+                "active_only": str(config.active_only).lower(),
+                "include_secondary_cnae": str(config.include_secondary_cnae).lower(),
+                "require_nome_fantasia": str(config.require_nome_fantasia).lower(),
+                "require_telefone": str(config.require_telefone).lower(),
+                "min_population": str(config.min_population),
+                "force_etl": str(config.force_etl).lower(),
+                "force_enrich": str(config.force_enrich).lower(),
+                "enrich_batch_size": str(config.enrich_batch_size),
+            },
+        },
+        timeout=20,
+    )
+    if response.status_code != 204:
+        log.error("GitHub workflow dispatch failed: %s %s", response.status_code, response.text)
+        raise HTTPException(status_code=502, detail="Não foi possível iniciar o Injector")
+    return {"started": True, "workflow": workflow}
+
+
+@app.get("/api/workflow-runs", dependencies=[Depends(_require_api_key)])
+def workflow_runs(limit: int = Query(default=10, ge=1, le=50)):
+    workflow = os.getenv("GITHUB_WORKFLOW_FILE", "prospect-pipeline.yml")
+    response = requests.get(
+        f"https://api.github.com/repos/{_github_repo()}/actions/workflows/{workflow}/runs",
+        headers=_github_headers(),
+        params={"per_page": limit},
+        timeout=20,
+    )
+    if not response.ok:
+        raise HTTPException(status_code=502, detail="Não foi possível consultar o Injector")
+    data = response.json()
+    return {
+        "runs": [
+            {
+                "id": item["id"],
+                "status": item["status"],
+                "conclusion": item.get("conclusion"),
+                "event": item["event"],
+                "created_at": item["created_at"],
+                "updated_at": item["updated_at"],
+                "html_url": item["html_url"],
+                "head_sha": item["head_sha"],
+            }
+            for item in data.get("workflow_runs", [])
+        ]
+    }
 
 
 @app.get("/api/db", dependencies=[Depends(_require_api_key)])
