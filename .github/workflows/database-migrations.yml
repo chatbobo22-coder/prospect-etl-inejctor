@@ -1,0 +1,53 @@
+name: Database Migrations
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sql/**"
+      - ".github/workflows/database-migrations.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cnpj-database-migrations
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SQL_DIR: ${{ github.workspace }}/sql
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Load database connection
+        env:
+          SECRET_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          VAR_DATABASE_URL: ${{ vars.DATABASE_URL }}
+        run: |
+          if [ -n "${SECRET_DATABASE_URL:-}" ]; then
+            echo "DATABASE_URL=${SECRET_DATABASE_URL}" >> "$GITHUB_ENV"
+          elif [ -n "${VAR_DATABASE_URL:-}" ]; then
+            echo "DATABASE_URL=${VAR_DATABASE_URL}" >> "$GITHUB_ENV"
+          else
+            echo "::error::DATABASE_URL não encontrado."
+            exit 1
+          fi
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install migration dependencies
+        run: pip install .
+
+      - name: Apply database migrations
+        run: python -m cnpj_etl.cli migrate
