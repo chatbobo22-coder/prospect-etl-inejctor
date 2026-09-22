@@ -42,6 +42,14 @@ def prepare_run_settings(settings, db, auto_bootstrap: bool = False):
                     extras.append("nome fantasia obrigatório")
                 if settings.filter_require_telefone:
                     extras.append("telefone válido obrigatório")
+                if settings.filter_require_email:
+                    extras.append("e-mail válido obrigatório")
+                if settings.filter_block_backoffice_email:
+                    extras.append("e-mails contábeis/fiscais bloqueados")
+                if settings.filter_min_activity_months > 0:
+                    extras.append(
+                        f"atividade >= {settings.filter_min_activity_months} meses"
+                    )
                 if settings.filter_min_population > 0:
                     extras.append(
                         f"municípios >= {settings.filter_min_population:,} hab".replace(",", ".")
@@ -84,6 +92,9 @@ def build_filter_context(settings, conn):
         include_secondary_cnae=settings.filter_include_secondary_cnae,
         require_nome_fantasia=settings.filter_require_nome_fantasia,
         require_telefone=settings.filter_require_telefone,
+        require_email=settings.filter_require_email,
+        block_backoffice_email=settings.filter_block_backoffice_email,
+        min_activity_months=settings.filter_min_activity_months,
         min_population=settings.filter_min_population,
         allowed_municipios=allowed_municipios,
     )

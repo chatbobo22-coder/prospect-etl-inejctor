@@ -1,6 +1,9 @@
 """Filtros de carga para reduzir volume (CNAE + situação cadastral)."""
 
 from dataclasses import dataclass, field
+from datetime import date
+
+from .enrichment.email import is_blocked_outreach_email, is_valid_email
 
 ACTIVE_STATUS = "02"
 
@@ -65,6 +68,9 @@ class FilterContext:
     include_secondary_cnae: bool = False
     require_nome_fantasia: bool = True
     require_telefone: bool = True
+    require_email: bool = False
+    block_backoffice_email: bool = True
+    min_activity_months: int = 0
     min_population: int = 0
     allowed_municipios: frozenset[tuple[str, str]] = field(default_factory=frozenset)
     matched_basics: set[str] = field(default_factory=set)
@@ -110,6 +116,36 @@ def has_valid_telefone(item: dict) -> bool:
     return True
 
 
+def has_eligible_email(item: dict, *, block_backoffice: bool = True) -> bool:
+    email = item.get("correio_eletronico") or item.get("email")
+    if not is_valid_email(email):
+        return False
+    return not block_backoffice or not is_blocked_outreach_email(email)
+
+
+def has_minimum_activity_age(item: dict, months: int, *, today: date | None = None) -> bool:
+    if months <= 0:
+        return True
+    raw = item.get("data_inicio_atividade")
+    if not raw:
+        return False
+    try:
+        started = raw if isinstance(raw, date) else date.fromisoformat(str(raw).strip())
+    except ValueError:
+        digits = "".join(ch for ch in str(raw) if ch.isdigit())
+        if len(digits) != 8:
+            return False
+        try:
+            started = date(int(digits[:4]), int(digits[4:6]), int(digits[6:]))
+        except ValueError:
+            return False
+    current = today or date.today()
+    age_months = (current.year - started.year) * 12 + current.month - started.month
+    if current.day < started.day:
+        age_months -= 1
+    return age_months >= months
+
+
 def municipio_key(item: dict) -> tuple[str, str]:
     uf = (item.get("uf") or "").upper()
     codigo = (item.get("municipio") or "").strip().zfill(4)
@@ -127,6 +163,12 @@ def matches_estabelecimento(item: dict, ctx: FilterContext) -> bool:
     if ctx.require_nome_fantasia and not has_nome_fantasia(item):
         return False
     if ctx.require_telefone and not has_valid_telefone(item):
+        return False
+    if ctx.require_email and not has_eligible_email(
+        item, block_backoffice=ctx.block_backoffice_email
+    ):
+        return False
+    if not has_minimum_activity_age(item, ctx.min_activity_months):
         return False
     if not ctx.cnaes:
         return True

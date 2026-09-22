@@ -41,7 +41,7 @@ def _parse_filter_ufs() -> frozenset[str]:
 def _parse_min_population() -> int:
     raw = os.getenv("FILTER_MIN_POPULATION")
     if raw is None or not raw.strip():
-        return 0
+        return 50000
     raw = raw.strip().lower()
     if raw in {"0", "none", "off", "false"}:
         return 0
@@ -102,8 +102,11 @@ class Settings:
     filter_cnaes: frozenset[str] = field(default_factory=_parse_filter_cnaes)
     filter_active_only: bool = _env_flag("FILTER_ACTIVE_ONLY", "true")
     filter_include_secondary_cnae: bool = _env_flag("FILTER_CNAE_INCLUDE_SECONDARY", "false")
-    filter_require_nome_fantasia: bool = _env_flag("FILTER_REQUIRE_NOME_FANTASIA", "false")
-    filter_require_telefone: bool = _env_flag("FILTER_REQUIRE_TELEFONE", "false")
+    filter_require_nome_fantasia: bool = _env_flag("FILTER_REQUIRE_NOME_FANTASIA", "true")
+    filter_require_telefone: bool = _env_flag("FILTER_REQUIRE_TELEFONE", "true")
+    filter_require_email: bool = _env_flag("FILTER_REQUIRE_EMAIL", "true")
+    filter_block_backoffice_email: bool = _env_flag("FILTER_BLOCK_BACKOFFICE_EMAIL", "true")
+    filter_min_activity_months: int = int(os.getenv("FILTER_MIN_ACTIVITY_MONTHS", "12"))
     filter_min_population: int = field(default_factory=_parse_min_population)
     ibge_population_year: int = int(os.getenv("IBGE_POPULATION_YEAR", "2024"))
     filter_ufs: frozenset[str] = field(default_factory=_parse_filter_ufs)

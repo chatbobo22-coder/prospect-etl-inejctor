@@ -26,9 +26,15 @@ class InjectorConfig(BaseModel):
     ufs: str = ""
     active_only: bool = True
     include_secondary_cnae: bool = False
-    require_nome_fantasia: bool = False
-    require_telefone: bool = False
-    min_population: int = Field(default=0, ge=0)
+    require_nome_fantasia: bool = True
+    require_telefone: bool = True
+    require_email: bool = True
+    block_backoffice_email: bool = True
+    min_activity_months: int = Field(default=12, ge=0, le=1200)
+    min_population: int = Field(default=50000, ge=0)
+    exclude_mei: bool = True
+    min_confidence_score: int = Field(default=70, ge=0, le=100)
+    min_lead_score: int = Field(default=60, ge=0, le=100)
     force_etl: bool = False
     force_enrich: bool = False
     enrich_batch_size: int = Field(default=500, ge=1, le=5000)
@@ -149,7 +155,16 @@ def injector_config():
             "include_secondary_cnae": settings.filter_include_secondary_cnae,
             "require_nome_fantasia": settings.filter_require_nome_fantasia,
             "require_telefone": settings.filter_require_telefone,
+            "require_email": settings.filter_require_email,
+            "block_backoffice_email": settings.filter_block_backoffice_email,
+            "min_activity_months": settings.filter_min_activity_months,
             "min_population": settings.filter_min_population,
+            "exclude_mei": os.getenv("PROSPECT_EXCLUDE_MEI", "true").lower()
+            in {"1", "true", "yes", "on"},
+            "min_confidence_score": int(
+                os.getenv("PROSPECT_MIN_CONFIDENCE_SCORE", "70")
+            ),
+            "min_lead_score": int(os.getenv("PROSPECT_MIN_LEAD_SCORE", "60")),
             "force_etl": False,
             "force_enrich": False,
             "enrich_batch_size": int(os.getenv("ENRICH_BATCH_SIZE", "500")),
@@ -173,7 +188,13 @@ def start_injector(config: InjectorConfig):
                 "include_secondary_cnae": str(config.include_secondary_cnae).lower(),
                 "require_nome_fantasia": str(config.require_nome_fantasia).lower(),
                 "require_telefone": str(config.require_telefone).lower(),
+                "require_email": str(config.require_email).lower(),
+                "block_backoffice_email": str(config.block_backoffice_email).lower(),
+                "min_activity_months": str(config.min_activity_months),
                 "min_population": str(config.min_population),
+                "exclude_mei": str(config.exclude_mei).lower(),
+                "min_confidence_score": str(config.min_confidence_score),
+                "min_lead_score": str(config.min_lead_score),
                 "force_etl": str(config.force_etl).lower(),
                 "force_enrich": str(config.force_enrich).lower(),
                 "enrich_batch_size": str(config.enrich_batch_size),

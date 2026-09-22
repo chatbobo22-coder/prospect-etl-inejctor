@@ -35,17 +35,47 @@ on:
         description: "Exigir nome fantasia"
         required: false
         type: boolean
-        default: false
+        default: true
       require_telefone:
         description: "Exigir telefone"
         required: false
         type: boolean
-        default: false
+        default: true
+      require_email:
+        description: "Exigir e-mail válido"
+        required: false
+        type: boolean
+        default: true
+      block_backoffice_email:
+        description: "Bloquear e-mails contábeis, fiscais, NFe, RH e cobrança"
+        required: false
+        type: boolean
+        default: true
+      min_activity_months:
+        description: "Tempo mínimo de atividade da empresa em meses"
+        required: false
+        type: string
+        default: "12"
       min_population:
         description: "População mínima do município"
         required: false
         type: string
-        default: "0"
+        default: "50000"
+      exclude_mei:
+        description: "Excluir empresas MEI da lista final"
+        required: false
+        type: boolean
+        default: true
+      min_confidence_score:
+        description: "Confiança mínima para qualidade A/B"
+        required: false
+        type: string
+        default: "70"
+      min_lead_score:
+        description: "Pontuação mínima para qualidade A/B"
+        required: false
+        type: string
+        default: "60"
       force_etl:
         description: "Reprocessa ZIPs da Receita (incrementa base, não apaga)"
         required: false
@@ -104,9 +134,12 @@ jobs:
         run: |
           DEFAULT_CNAES="4530703,4744099,4751201,4752100,4753900,4754701,4755503,4759899,4763601,4763602,4772500,4781400,4782201,4782202,4783101,4783102,4789001,4791201"
           echo "FILTER_ACTIVE_ONLY=${{ inputs.active_only != false }}" >> "$GITHUB_ENV"
-          echo "FILTER_REQUIRE_NOME_FANTASIA=${{ inputs.require_nome_fantasia == true }}" >> "$GITHUB_ENV"
-          echo "FILTER_REQUIRE_TELEFONE=${{ inputs.require_telefone == true }}" >> "$GITHUB_ENV"
-          echo "FILTER_MIN_POPULATION=${{ inputs.min_population || '0' }}" >> "$GITHUB_ENV"
+          echo "FILTER_REQUIRE_NOME_FANTASIA=${{ inputs.require_nome_fantasia != false }}" >> "$GITHUB_ENV"
+          echo "FILTER_REQUIRE_TELEFONE=${{ inputs.require_telefone != false }}" >> "$GITHUB_ENV"
+          echo "FILTER_REQUIRE_EMAIL=${{ inputs.require_email != false }}" >> "$GITHUB_ENV"
+          echo "FILTER_BLOCK_BACKOFFICE_EMAIL=${{ inputs.block_backoffice_email != false }}" >> "$GITHUB_ENV"
+          echo "FILTER_MIN_ACTIVITY_MONTHS=${{ inputs.min_activity_months || '12' }}" >> "$GITHUB_ENV"
+          echo "FILTER_MIN_POPULATION=${{ inputs.min_population || '50000' }}" >> "$GITHUB_ENV"
           echo "FILTER_CNAE_INCLUDE_SECONDARY=${{ inputs.include_secondary_cnae == true }}" >> "$GITHUB_ENV"
           echo "IBGE_POPULATION_YEAR=2024" >> "$GITHUB_ENV"
           echo "ENRICH_CANDIDATE_VIEW=cnpj.v_prospect_candidates" >> "$GITHUB_ENV"
@@ -114,8 +147,9 @@ jobs:
           echo "ENRICH_MAX_ROUNDS=50" >> "$GITHUB_ENV"
           echo "ENRICH_BRASILAPI=true" >> "$GITHUB_ENV"
           echo "ENRICH_DELAY_SECONDS=0.3" >> "$GITHUB_ENV"
-          echo "PROSPECT_MIN_CONFIDENCE_SCORE=60" >> "$GITHUB_ENV"
-          echo "PROSPECT_MIN_LEAD_SCORE=60" >> "$GITHUB_ENV"
+          echo "PROSPECT_MIN_CONFIDENCE_SCORE=${{ inputs.min_confidence_score || '70' }}" >> "$GITHUB_ENV"
+          echo "PROSPECT_MIN_LEAD_SCORE=${{ inputs.min_lead_score || '60' }}" >> "$GITHUB_ENV"
+          echo "PROSPECT_EXCLUDE_MEI=${{ inputs.exclude_mei != false }}" >> "$GITHUB_ENV"
           echo "ENRICHMENT_VERSION=v2" >> "$GITHUB_ENV"
           echo "ENRICH_NO_SITE_RETRY_DAYS=30" >> "$GITHUB_ENV"
           echo "CRAWLER_MAX_PAGES=8" >> "$GITHUB_ENV"

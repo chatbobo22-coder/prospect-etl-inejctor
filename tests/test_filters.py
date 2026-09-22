@@ -1,6 +1,10 @@
+from datetime import date
+
 from cnpj_etl.filters import (
     DEFAULT_FILTER_CNAES,
     FilterContext,
+    has_eligible_email,
+    has_minimum_activity_age,
     matches_estabelecimento,
     should_load_row,
     track_estabelecimento,
@@ -150,3 +154,37 @@ def test_rejects_all_zero_phone():
         "telefone1": "000000000",
     }
     assert not matches_estabelecimento(item, ctx)
+
+
+def test_email_filter_accepts_free_provider_and_blocks_backoffice():
+    assert has_eligible_email({"correio_eletronico": "dono@gmail.com"})
+    assert has_eligible_email({"correio_eletronico": "vendas@empresa.com.br"})
+    assert not has_eligible_email({"correio_eletronico": "nfe@empresa.com.br"})
+    assert not has_eligible_email({"correio_eletronico": "fiscal.loja@hotmail.com"})
+
+
+def test_requires_valid_email_when_enabled():
+    ctx = FilterContext(
+        frozenset(["4751201"]),
+        require_email=True,
+        require_nome_fantasia=False,
+        require_telefone=False,
+    )
+    item = {
+        "situacao_cadastral": "02",
+        "cnae_fiscal_principal": "4751201",
+        "correio_eletronico": "responsavel@hotmail.com",
+    }
+    assert matches_estabelecimento(item, ctx)
+    item["correio_eletronico"] = "financeiro@empresa.com.br"
+    assert not matches_estabelecimento(item, ctx)
+
+
+def test_minimum_activity_age():
+    today = date(2026, 9, 22)
+    assert has_minimum_activity_age(
+        {"data_inicio_atividade": "20250922"}, 12, today=today
+    )
+    assert not has_minimum_activity_age(
+        {"data_inicio_atividade": "20251001"}, 12, today=today
+    )

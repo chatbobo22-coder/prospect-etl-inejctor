@@ -1,4 +1,4 @@
-"""Qualificação de prospects v2 para outreach automatizado."""
+"""Qualificação de prospects v3 para outreach automatizado."""
 
 from __future__ import annotations
 
@@ -7,10 +7,10 @@ import os
 
 from psycopg.types.json import Jsonb
 
-from .enrichment.email import classify_email_role
+from .enrichment.email import classify_email_role, is_valid_email
 
 log = logging.getLogger(__name__)
-QUALIFICATION_VERSION = "v2"
+QUALIFICATION_VERSION = "v3"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -20,15 +20,30 @@ def _env_int(name: str, default: int) -> int:
     return int(raw)
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
 def select_contact_channel(row: dict) -> tuple[str | None, str | None, int, str]:
     """Retorna (channel, value, confidence, role)."""
     email = (row.get("email") or row.get("email_original") or "").strip()
     email_tipo = row.get("email_tipo") or ""
     email_role = classify_email_role(email)
 
-    if email_tipo == "corporativo" and email and email_role in {"sales", "support", "general"}:
-        confidence = 85 if email_role == "sales" else 75
-        return "email_corporativo", email, confidence, email_role
+    email_allowed = (
+        is_valid_email(email)
+        and email_role != "blocked_backoffice"
+        and email_tipo in {"corporativo", "gratuito"}
+    )
+    if email_allowed and email_role in {"sales", "support", "general", "personal"}:
+        if email_tipo == "corporativo":
+            confidence = 85 if email_role == "sales" else 75
+            return "email_corporativo", email, confidence, email_role
+        confidence = 75 if email_role in {"sales", "personal"} else 65
+        return "email_gratuito", email, confidence, email_role
 
     if row.get("whatsapp_valid") and row.get("whatsapp_number_normalized"):
         url = row.get("whatsapp_url") or f"https://wa.me/{row['whatsapp_number_normalized']}"
@@ -37,9 +52,6 @@ def select_contact_channel(row: dict) -> tuple[str | None, str | None, int, str]
     telefone = (row.get("telefone_1") or "").strip()
     if telefone:
         return "telefone_comercial", telefone, 60, "general"
-
-    if email_tipo == "corporativo" and email and email_role in {"finance", "accounting"}:
-        return "email_corporativo", email, 40, email_role
 
     if row.get("telefone_candidato_whatsapp"):
         return "whatsapp_candidato", row["telefone_candidato_whatsapp"], 25, "unknown"
@@ -50,6 +62,24 @@ def select_contact_channel(row: dict) -> tuple[str | None, str | None, int, str]
     return None, None, 0, "unknown"
 
 
+def classify_lead_quality(row: dict, channel: str | None) -> str | None:
+    """Classifica apenas leads prontos para outreach em qualidade A ou B."""
+    if channel not in {"email_corporativo", "email_gratuito"}:
+        return None
+    lead = int(row.get("lead_score") or row.get("digital_score") or 0)
+    confidence = int(row.get("confidence_score") or row.get("digital_score") or 0)
+    has_strong_signal = bool(
+        row.get("site_valid")
+        or row.get("whatsapp_valid")
+        or row.get("google_business_status") == "OPERATIONAL"
+    )
+    if lead >= 70 and confidence >= 70 and has_strong_signal:
+        return "A"
+    if lead >= 60 and confidence >= 70:
+        return "B"
+    return None
+
+
 def evaluate_qualification(row: dict) -> tuple[str, list[str], list[str]]:
     """
     Retorna (status, rejection_reasons, qualification_reasons).
@@ -58,7 +88,7 @@ def evaluate_qualification(row: dict) -> tuple[str, list[str], list[str]]:
     rejection: list[str] = []
     reasons: list[str] = []
 
-    min_confidence = _env_int("PROSPECT_MIN_CONFIDENCE_SCORE", 60)
+    min_confidence = _env_int("PROSPECT_MIN_CONFIDENCE_SCORE", 70)
     min_lead = _env_int("PROSPECT_MIN_LEAD_SCORE", 60)
 
     confidence = int(row.get("confidence_score") or row.get("digital_score") or 0)
@@ -73,6 +103,17 @@ def evaluate_qualification(row: dict) -> tuple[str, list[str], list[str]]:
         rejection.append("site_incompativel_cnae")
 
     channel, contact_value, contact_conf, contact_role = select_contact_channel(row)
+    email = (row.get("email") or row.get("email_original") or "").strip()
+    email_role = classify_email_role(email)
+    quality = classify_lead_quality(row, channel)
+    if not is_valid_email(email):
+        rejection.append("email_invalido_ou_ausente")
+    if email_role == "blocked_backoffice":
+        rejection.append("email_backoffice_bloqueado")
+    if quality is None:
+        rejection.append("fora_qualidade_a_b")
+    if _env_flag("PROSPECT_EXCLUDE_MEI", True) and row.get("opcao_mei") == "S":
+        rejection.append("mei_excluido")
     if not channel or contact_conf < 50:
         rejection.append("sem_canal_outreach_valido")
     elif channel == "whatsapp_candidato":
@@ -104,8 +145,9 @@ def evaluate_qualification(row: dict) -> tuple[str, list[str], list[str]]:
 
     if channel == "whatsapp_confirmado":
         reasons.append("whatsapp_confirmado")
-    if channel == "email_corporativo":
-        reasons.append("email_corporativo")
+    if channel in {"email_corporativo", "email_gratuito"}:
+        reasons.append(channel)
+        reasons.append(f"qualidade_{quality.lower()}" if quality else "sem_qualidade_a_b")
     if channel == "telefone_comercial":
         reasons.append("telefone_comercial")
     if channel == "instagram":
@@ -118,6 +160,10 @@ def evaluate_qualification(row: dict) -> tuple[str, list[str], list[str]]:
         "sem_canal_outreach_valido",
         "whatsapp_nao_confirmado",
         "instagram_nao_automatico",
+        "email_invalido_ou_ausente",
+        "email_backoffice_bloqueado",
+        "fora_qualidade_a_b",
+        "mei_excluido",
     }
     hard_fail = [
         r
@@ -214,6 +260,7 @@ def promote_qualified(conn) -> dict[str, int]:
         item = dict(zip(columns, raw))
         status, rejection, reasons = evaluate_qualification(item)
         channel, contact_value, contact_conf, contact_role = select_contact_channel(item)
+        lead_quality = classify_lead_quality(item, channel)
         stats[status] = stats.get(status, 0) + 1
 
         conn.execute(
@@ -227,7 +274,7 @@ def promote_qualified(conn) -> dict[str, int]:
                 presence_maturity, commerce_maturity, lead_classification,
                 decisor_nome, decisor_qualificacao, faixa_faturamento_estimada,
                 capital_social, opcao_mei, opcao_simples,
-                qualification_status, rejection_reasons, qualification_reasons,
+                qualification_status, lead_quality, rejection_reasons, qualification_reasons,
                 contact_channel, contact_value, contact_confidence, contact_role,
                 qualification_version, sinais, qualified_at, last_qualified_at, updated_at
             ) VALUES (
@@ -241,7 +288,8 @@ def promote_qualified(conn) -> dict[str, int]:
                 %(presence_maturity)s, %(commerce_maturity)s, %(lead_classification)s,
                 %(decisor_nome)s, %(decisor_qualificacao)s, %(faixa_faturamento_estimada)s,
                 %(capital_social)s, %(opcao_mei)s, %(opcao_simples)s,
-                %(qualification_status)s, %(rejection_reasons)s, %(qualification_reasons)s,
+                %(qualification_status)s, %(lead_quality)s, %(rejection_reasons)s,
+                %(qualification_reasons)s,
                 %(contact_channel)s, %(contact_value)s, %(contact_confidence)s, %(contact_role)s,
                 %(qualification_version)s, %(sinais)s, now(), now(), now()
             )
@@ -277,6 +325,7 @@ def promote_qualified(conn) -> dict[str, int]:
                 opcao_mei = EXCLUDED.opcao_mei,
                 opcao_simples = EXCLUDED.opcao_simples,
                 qualification_status = EXCLUDED.qualification_status,
+                lead_quality = EXCLUDED.lead_quality,
                 rejection_reasons = EXCLUDED.rejection_reasons,
                 qualification_reasons = EXCLUDED.qualification_reasons,
                 contact_channel = EXCLUDED.contact_channel,
@@ -327,6 +376,7 @@ def promote_qualified(conn) -> dict[str, int]:
                 "opcao_mei": item["opcao_mei"],
                 "opcao_simples": item["opcao_simples"],
                 "qualification_status": status,
+                "lead_quality": lead_quality,
                 "rejection_reasons": rejection,
                 "qualification_reasons": reasons,
                 "contact_channel": channel,
@@ -344,5 +394,5 @@ def promote_qualified(conn) -> dict[str, int]:
         "SELECT COUNT(*) FROM cnpj.prospectos_qualificados WHERE qualification_status = 'qualified'"
     ).fetchone()[0]
     stats["total_qualified"] = total_q
-    log.info("Qualificação v2: %s", stats)
+    log.info("Qualificação v3 (qualidade A/B): %s", stats)
     return stats

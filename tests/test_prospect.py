@@ -1,4 +1,8 @@
-from cnpj_etl.prospect import evaluate_qualification, select_contact_channel
+from cnpj_etl.prospect import (
+    classify_lead_quality,
+    evaluate_qualification,
+    select_contact_channel,
+)
 
 
 def _base_row(**overrides):
@@ -84,3 +88,47 @@ def test_whatsapp_candidate_not_confirmed():
     )
     assert channel == "whatsapp_candidato"
     assert conf < 50
+
+
+def test_free_email_can_be_quality_a():
+    row = _base_row(email="proprietario@gmail.com", email_tipo="gratuito")
+    channel, _, confidence, role = select_contact_channel(row)
+    assert channel == "email_gratuito"
+    assert confidence >= 65
+    assert role == "general"
+    assert classify_lead_quality(row, channel) == "A"
+    status, rejection, reasons = evaluate_qualification(row)
+    assert status == "qualified"
+    assert not rejection
+    assert "email_gratuito" in reasons
+    assert "qualidade_a" in reasons
+
+
+def test_quality_b_is_qualified():
+    row = _base_row(
+        lead_score=62,
+        confidence_score=72,
+        site_valid=False,
+        whatsapp_valid=False,
+        email="dono@hotmail.com",
+        email_tipo="gratuito",
+    )
+    channel, *_ = select_contact_channel(row)
+    assert classify_lead_quality(row, channel) == "B"
+    status, rejection, reasons = evaluate_qualification(row)
+    assert status == "qualified"
+    assert not rejection
+    assert "qualidade_b" in reasons
+
+
+def test_backoffice_email_is_rejected_even_with_strong_scores():
+    row = _base_row(email="nfe@empresa.com.br", email_tipo="corporativo")
+    status, rejection, _ = evaluate_qualification(row)
+    assert status == "rejected"
+    assert "email_backoffice_bloqueado" in rejection
+
+
+def test_mei_is_rejected_by_default():
+    status, rejection, _ = evaluate_qualification(_base_row(opcao_mei="S"))
+    assert status == "rejected"
+    assert "mei_excluido" in rejection

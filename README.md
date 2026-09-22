@@ -179,6 +179,34 @@ WHERE qualification_status = 'qualified'
 ORDER BY lead_score DESC;
 ```
 
+### Qualidade A/B para outreach
+
+A qualificação v3 mantém somente empresas com e-mail válido e qualidade `A` ou `B`.
+Provedores gratuitos, como Gmail e Hotmail, são aceitos quando os demais sinais confirmam
+a qualidade do lead. Endereços de contabilidade, fiscal, NFe, faturamento, cobrança, DP e RH
+são bloqueados.
+
+- **A:** `lead_score >= 70`, `confidence_score >= 70` e ao menos um sinal forte
+  (site válido, WhatsApp confirmado ou Google Business operacional).
+- **B:** `lead_score >= 60` e `confidence_score >= 70`.
+
+Filtros recomendados para a carga:
+
+```env
+FILTER_ACTIVE_ONLY=true
+FILTER_REQUIRE_NOME_FANTASIA=true
+FILTER_REQUIRE_TELEFONE=true
+FILTER_REQUIRE_EMAIL=true
+FILTER_BLOCK_BACKOFFICE_EMAIL=true
+FILTER_MIN_ACTIVITY_MONTHS=12
+FILTER_MIN_POPULATION=50000
+PROSPECT_MIN_CONFIDENCE_SCORE=70
+PROSPECT_MIN_LEAD_SCORE=60
+PROSPECT_EXCLUDE_MEI=true
+```
+
+A view `cnpj.v_prospectos_outreach_v3` entrega somente os leads aprovados A/B.
+
 ## Fonte
 
 O projeto utiliza os arquivos públicos da Receita Federal via **Nextcloud** (`arquivos.receitafederal.gov.br/index.php/s/YggdBLfdninEJX9`), com fallback para o diretório HTML legado se `RFB_BASE_URL` apontar para a URL antiga. Confira o leiaute oficial antes de alterações futuras, pois a Receita pode mudar nomes ou colunas.
