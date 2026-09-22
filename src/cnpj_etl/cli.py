@@ -44,6 +44,8 @@ def main():
     parser = argparse.ArgumentParser(description="ETL dos Dados Abertos do CNPJ")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("migrate", help="Cria/atualiza o banco")
+    migrate_file = sub.add_parser("migrate-file", help="Aplica uma migração SQL específica")
+    migrate_file.add_argument("filename", help="Nome do arquivo dentro do diretório sql")
     sub.add_parser("check-db", help="Testa a conexão com o PostgreSQL")
     sub.add_parser("verify-filters", help="Valida filtros de carga antes do ETL")
     sub.add_parser("sync-ibge", help="Baixa população municipal do IBGE para o banco")
@@ -164,6 +166,15 @@ def main():
         logging.info(
             "Base CNPJ limpa — próximo run fará carga completa (use --force se etl.files voltar)"
         )
+    elif args.command == "migrate-file":
+        filename = Path(args.filename).name
+        if filename != args.filename or not filename.endswith(".sql"):
+            raise SystemExit("Informe somente o nome de um arquivo .sql do diretório de migrations.")
+        migration = sql_dir / filename
+        if not migration.is_file():
+            raise SystemExit(f"Migration não encontrada: {filename}")
+        db.migrate_file(migration)
+        logging.info("Migration aplicada: %s", filename)
     elif args.command == "migrate":
         db.migrate(sql_dir)
     else:

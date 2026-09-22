@@ -50,4 +50,4 @@ jobs:
         run: pip install .
 
       - name: Apply database migrations
-        run: python -m cnpj_etl.cli migrate
+        run: python -m cnpj_etl.cli migrate-file 011_lead_quality_ab.sql

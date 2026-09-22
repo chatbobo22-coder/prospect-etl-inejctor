@@ -29,6 +29,11 @@ class Database:
                 conn.execute(path.read_text(encoding="utf-8"))
             conn.commit()
 
+    def migrate_file(self, path: Path):
+        with self.connect() as conn:
+            conn.execute(path.read_text(encoding="utf-8"))
+            conn.commit()
+
     def reset_load(self, conn):
         conn.execute(
             "TRUNCATE cnpj.socios, cnpj.simples, cnpj.estabelecimentos, cnpj.empresas, "
