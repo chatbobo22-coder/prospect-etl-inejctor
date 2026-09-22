@@ -2,6 +2,9 @@
 
 Projeto Python para descobrir a competência mais recente publicada pela Receita Federal, baixar os ZIPs oficiais e popular PostgreSQL de forma idempotente. Inclui empresas, estabelecimentos, contatos, CNAEs, Simples/MEI, sócios e tabelas auxiliares.
 
+Consulte [docs/INTELLIGENCE.md](docs/INTELLIGENCE.md) para a esteira de inteligência comercial,
+fontes, pontuação, pessoas públicas e endpoints consumidos pelo MestreLead.
+
 ## Requisitos
 
 - Docker + Docker Compose (recomendado), ou Python 3.11+ e PostgreSQL 15+.

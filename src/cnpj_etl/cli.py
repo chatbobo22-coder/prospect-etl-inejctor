@@ -13,6 +13,7 @@ from .digital_enricher import (
     run_enrichment_until_empty,
 )
 from .ibge_population import ensure_municipios_populacao
+from .intelligence import IntelligenceSettings, run_intelligence, run_intelligence_until_empty
 from .pipeline import run
 from .prospect import promote_qualified
 from .source import RfbSource
@@ -73,6 +74,13 @@ def main():
     )
     prospect.add_argument("--batch-size", type=int, help="CNPJs por rodada de enriquecimento")
     prospect.add_argument("--force-enrich", action="store_true", help="Reprocessa todos no enrich")
+    intelligence = sub.add_parser(
+        "intelligence-pipeline", help="Consulta fontes públicas por lote e atualiza perfis comerciais"
+    )
+    intelligence.add_argument("--batch-size", type=int, help="Empresas por fonte")
+    intelligence.add_argument("--sources", help="Fontes separadas por vírgula")
+    intelligence.add_argument("--force", action="store_true", help="Reconsulta mesmo dentro do TTL")
+    intelligence.add_argument("--until-empty", action="store_true", help="Processa até esvaziar a fila")
     rescore = sub.add_parser("rescore-digital", help="Recalcula scores v2 sem HTTP")
     rescore.add_argument("--version", default="v2", help="Versão alvo do score")
     requeue = sub.add_parser("requeue-enrichment", help="Recoloca registros antigos na fila")
@@ -145,8 +153,31 @@ def main():
         settings_obj = EnrichSettings(batch_size=batch_size)
         with db.connect() as conn:
             enrich_stats = run_enrichment_until_empty(conn, settings_obj, force=args.force_enrich)
+            intelligence_stats = run_intelligence(conn)
             qualify_stats = promote_qualified(conn)
-        logging.info("Pipeline prospect: enrich=%s qualify=%s", enrich_stats, qualify_stats)
+        logging.info(
+            "Pipeline prospect: enrich=%s intelligence=%s qualify=%s",
+            enrich_stats,
+            intelligence_stats,
+            qualify_stats,
+        )
+    elif args.command == "intelligence-pipeline":
+        db.migrate(sql_dir)
+        sources = (
+            tuple(item.strip().lower() for item in args.sources.split(",") if item.strip())
+            if args.sources
+            else IntelligenceSettings().sources
+        )
+        settings_obj = IntelligenceSettings(
+            batch_size=args.batch_size or int(os.getenv("INTELLIGENCE_BATCH_SIZE", "100")),
+            sources=sources,
+        )
+        with db.connect() as conn:
+            if args.until_empty:
+                stats = run_intelligence_until_empty(conn, settings_obj, force=args.force)
+            else:
+                stats = run_intelligence(conn, settings_obj, force=args.force)
+        logging.info("Inteligência comercial concluída: %s", stats)
     elif args.command == "rescore-digital":
         db.migrate(sql_dir)
         with db.connect() as conn:

@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from cnpj_etl.config import Settings
 from cnpj_etl.database import Database
+from cnpj_etl.intelligence import get_company_profile, list_sources
 
 log = logging.getLogger(__name__)
 app = FastAPI(title="CNPJ ETL", version="2.0.0")
@@ -38,6 +39,11 @@ class InjectorConfig(BaseModel):
     force_etl: bool = False
     force_enrich: bool = False
     enrich_batch_size: int = Field(default=500, ge=1, le=5000)
+    intelligence_sources: str = (
+        "receita,website,rdap,cvm,gdelt,pncp,inpi,google_places,pagespeed,"
+        "meta_ads,google_ads,people_provider"
+    )
+    intelligence_batch_size: int = Field(default=100, ge=1, le=1000)
 
     @field_validator("competence")
     @classmethod
@@ -168,6 +174,11 @@ def injector_config():
             "force_etl": False,
             "force_enrich": False,
             "enrich_batch_size": int(os.getenv("ENRICH_BATCH_SIZE", "500")),
+            "intelligence_sources": os.getenv(
+                "INTELLIGENCE_SOURCES",
+                "receita,website,rdap,cvm,gdelt,pncp,inpi,google_places,pagespeed,meta_ads,google_ads,people_provider",
+            ),
+            "intelligence_batch_size": int(os.getenv("INTELLIGENCE_BATCH_SIZE", "100")),
         }
     }
 
@@ -198,6 +209,8 @@ def start_injector(config: InjectorConfig):
                 "force_etl": str(config.force_etl).lower(),
                 "force_enrich": str(config.force_enrich).lower(),
                 "enrich_batch_size": str(config.enrich_batch_size),
+                "intelligence_sources": config.intelligence_sources,
+                "intelligence_batch_size": str(config.intelligence_batch_size),
             },
         },
         timeout=20,
@@ -336,3 +349,32 @@ def enrichment_stats():
         "platforms": {row[0]: row[1] for row in platforms},
         "qualification_status": {row[0]: row[1] for row in qual},
     }
+
+
+@app.get("/api/intelligence/sources", dependencies=[Depends(_require_api_key)])
+def intelligence_sources():
+    try:
+        db = Database(Settings().database_url)
+        with db.connect() as conn:
+            sources = list_sources(conn)
+    except Exception:
+        log.exception("Intelligence source list failed")
+        raise _service_error() from None
+    return {"sources": sources}
+
+
+@app.get("/api/intelligence/companies/{cnpj}", dependencies=[Depends(_require_api_key)])
+def intelligence_company(cnpj: str):
+    digits = re.sub(r"\D", "", cnpj)
+    if len(digits) != 14:
+        raise HTTPException(status_code=422, detail="CNPJ inválido")
+    try:
+        db = Database(Settings().database_url)
+        with db.connect() as conn:
+            profile = get_company_profile(conn, digits)
+    except Exception:
+        log.exception("Intelligence profile failed")
+        raise _service_error() from None
+    if not profile:
+        raise HTTPException(status_code=404, detail="Empresa não encontrada")
+    return profile

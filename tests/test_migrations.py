@@ -14,7 +14,17 @@ def test_migrations_idempotent():
 
 def test_legacy_digital_view_is_recreated_safely():
     sql_dir = Path(__file__).resolve().parents[1] / "sql"
-    for migration in ("006_digital_presenca.sql", "007_digital_presenca_upgrade.sql"):
+    for migration in (
+        "006_digital_presenca.sql",
+        "007_digital_presenca_upgrade.sql",
+    ):
         text = (sql_dir / migration).read_text(encoding="utf-8")
         assert "DROP VIEW IF EXISTS cnpj.v_prospect_digital;" in text
         assert "CREATE VIEW cnpj.v_prospect_digital AS" in text
+
+
+def test_company_intelligence_migration_has_no_volatile_partial_index():
+    sql_dir = Path(__file__).resolve().parents[1] / "sql"
+    text = (sql_dir / "012_company_intelligence.sql").read_text(encoding="utf-8")
+    assert "CREATE SCHEMA IF NOT EXISTS intelligence" in text
+    assert "WHERE expires_at IS NULL OR expires_at > now()" not in text

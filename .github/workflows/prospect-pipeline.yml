@@ -91,6 +91,16 @@ on:
         required: false
         type: string
         default: "500"
+      intelligence_sources:
+        description: "Fontes de inteligência separadas por vírgula"
+        required: false
+        type: string
+        default: "receita,website,rdap,cvm,gdelt,pncp,inpi,google_places,pagespeed,meta_ads,google_ads,people_provider"
+      intelligence_batch_size:
+        description: "Empresas consultadas por fonte e por execução"
+        required: false
+        type: string
+        default: "100"
 
 concurrency:
   group: cnpj-enrichment-write
@@ -154,6 +164,9 @@ jobs:
           echo "ENRICH_NO_SITE_RETRY_DAYS=30" >> "$GITHUB_ENV"
           echo "CRAWLER_MAX_PAGES=8" >> "$GITHUB_ENV"
           echo "GOOGLE_PLACES_ENABLED=false" >> "$GITHUB_ENV"
+          echo "INTELLIGENCE_SOURCES=${{ inputs.intelligence_sources || 'receita,website,rdap,cvm,gdelt,pncp,inpi,google_places,pagespeed,meta_ads,google_ads,people_provider' }}" >> "$GITHUB_ENV"
+          echo "INTELLIGENCE_BATCH_SIZE=${{ inputs.intelligence_batch_size || '100' }}" >> "$GITHUB_ENV"
+          echo "INTELLIGENCE_MAX_ROUNDS=40" >> "$GITHUB_ENV"
           if [ -n "${{ secrets.GOOGLE_PLACES_API_KEY }}" ]; then
             echo "GOOGLE_PLACES_ENABLED=true" >> "$GITHUB_ENV"
             echo "GOOGLE_PLACES_API_KEY=${{ secrets.GOOGLE_PLACES_API_KEY }}" >> "$GITHUB_ENV"
