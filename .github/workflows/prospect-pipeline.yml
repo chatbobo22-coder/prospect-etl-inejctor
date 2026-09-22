@@ -17,10 +17,6 @@ on:
         description: "CNAEs separados por vírgula (vazio = padrão do projeto)"
         required: false
         type: string
-      filter_ufs:
-        description: "UFs separadas por vírgula (vazio = Brasil inteiro)"
-        required: false
-        type: string
       active_only:
         description: "Somente estabelecimentos ativos"
         required: false
@@ -30,17 +26,17 @@ on:
         description: "Considerar CNAEs secundários"
         required: false
         type: boolean
-        default: false
+        default: true
       require_nome_fantasia:
         description: "Exigir nome fantasia"
         required: false
         type: boolean
-        default: true
+        default: false
       require_telefone:
         description: "Exigir telefone"
         required: false
         type: boolean
-        default: true
+        default: false
       require_email:
         description: "Exigir e-mail válido"
         required: false
@@ -60,7 +56,7 @@ on:
         description: "População mínima do município"
         required: false
         type: string
-        default: "50000"
+        default: "0"
       exclude_mei:
         description: "Excluir empresas MEI da lista final"
         required: false
@@ -144,13 +140,13 @@ jobs:
         run: |
           DEFAULT_CNAES="4530703,4744099,4751201,4752100,4753900,4754701,4755503,4759899,4763601,4763602,4772500,4781400,4782201,4782202,4783101,4783102,4789001,4791201"
           echo "FILTER_ACTIVE_ONLY=${{ inputs.active_only != false }}" >> "$GITHUB_ENV"
-          echo "FILTER_REQUIRE_NOME_FANTASIA=${{ inputs.require_nome_fantasia != false }}" >> "$GITHUB_ENV"
-          echo "FILTER_REQUIRE_TELEFONE=${{ inputs.require_telefone != false }}" >> "$GITHUB_ENV"
+          echo "FILTER_REQUIRE_NOME_FANTASIA=${{ inputs.require_nome_fantasia == true }}" >> "$GITHUB_ENV"
+          echo "FILTER_REQUIRE_TELEFONE=${{ inputs.require_telefone == true }}" >> "$GITHUB_ENV"
           echo "FILTER_REQUIRE_EMAIL=${{ inputs.require_email != false }}" >> "$GITHUB_ENV"
           echo "FILTER_BLOCK_BACKOFFICE_EMAIL=${{ inputs.block_backoffice_email != false }}" >> "$GITHUB_ENV"
           echo "FILTER_MIN_ACTIVITY_MONTHS=${{ inputs.min_activity_months || '12' }}" >> "$GITHUB_ENV"
-          echo "FILTER_MIN_POPULATION=${{ inputs.min_population || '50000' }}" >> "$GITHUB_ENV"
-          echo "FILTER_CNAE_INCLUDE_SECONDARY=${{ inputs.include_secondary_cnae == true }}" >> "$GITHUB_ENV"
+          echo "FILTER_MIN_POPULATION=${{ inputs.min_population || '0' }}" >> "$GITHUB_ENV"
+          echo "FILTER_CNAE_INCLUDE_SECONDARY=${{ github.event_name == 'schedule' || inputs.include_secondary_cnae == true }}" >> "$GITHUB_ENV"
           echo "IBGE_POPULATION_YEAR=2024" >> "$GITHUB_ENV"
           echo "ENRICH_CANDIDATE_VIEW=cnpj.v_prospect_candidates" >> "$GITHUB_ENV"
           echo "ENRICH_BATCH_SIZE=${{ inputs.enrich_batch_size || '500' }}" >> "$GITHUB_ENV"
@@ -178,9 +174,6 @@ jobs:
             echo "FILTER_CNAES=${{ vars.FILTER_CNAES }}" >> "$GITHUB_ENV"
           else
             echo "FILTER_CNAES=$DEFAULT_CNAES" >> "$GITHUB_ENV"
-          fi
-          if [ -n "${{ inputs.filter_ufs }}" ]; then
-            echo "FILTER_UF=${{ inputs.filter_ufs }}" >> "$GITHUB_ENV"
           fi
           if [ -n "${SPEEDIO_KEY:-}" ]; then
             echo "ENRICH_EXTERNAL_API_KEY=${SPEEDIO_KEY}" >> "$GITHUB_ENV"

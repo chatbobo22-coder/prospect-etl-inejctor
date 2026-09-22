@@ -7,6 +7,8 @@ def test_migrations_idempotent():
         sorted(sql_dir.glob("009_*.sql"))
         + sorted(sql_dir.glob("010_*.sql"))
         + sorted(sql_dir.glob("011_*.sql"))
+        + sorted(sql_dir.glob("012_*.sql"))
+        + sorted(sql_dir.glob("013_*.sql"))
     ):
         text = path.read_text(encoding="utf-8")
         assert "IF NOT EXISTS" in text or "CREATE OR REPLACE" in text or "DO $$" in text
@@ -28,3 +30,13 @@ def test_company_intelligence_migration_has_no_volatile_partial_index():
     text = (sql_dir / "012_company_intelligence.sql").read_text(encoding="utf-8")
     assert "CREATE SCHEMA IF NOT EXISTS intelligence" in text
     assert "WHERE expires_at IS NULL OR expires_at > now()" not in text
+
+
+def test_national_candidate_view_has_no_geographic_cutoff():
+    sql_dir = Path(__file__).resolve().parents[1] / "sql"
+    text = (sql_dir / "013_national_quality_candidates.sql").read_text(encoding="utf-8")
+    assert "v.uf" not in text
+    assert "municipios_populacao" not in text
+    assert "v.telefone_1" not in text
+    assert "v.nome_fantasia" not in text
+    assert "cnaes_fiscais_secundarios" in text

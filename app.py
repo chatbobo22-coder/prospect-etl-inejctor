@@ -26,13 +26,13 @@ class InjectorConfig(BaseModel):
     cnaes: str = ""
     ufs: str = ""
     active_only: bool = True
-    include_secondary_cnae: bool = False
-    require_nome_fantasia: bool = True
-    require_telefone: bool = True
+    include_secondary_cnae: bool = True
+    require_nome_fantasia: bool = False
+    require_telefone: bool = False
     require_email: bool = True
     block_backoffice_email: bool = True
     min_activity_months: int = Field(default=12, ge=0, le=1200)
-    min_population: int = Field(default=50000, ge=0)
+    min_population: int = Field(default=0, ge=0)
     exclude_mei: bool = True
     min_confidence_score: int = Field(default=70, ge=0, le=100)
     min_lead_score: int = Field(default=60, ge=0, le=100)
@@ -156,7 +156,8 @@ def injector_config():
             "base_url": settings.base_url,
             "competence": "",
             "cnaes": ",".join(sorted(settings.filter_cnaes)),
-            "ufs": ",".join(sorted(settings.filter_ufs)),
+            "ufs": "",
+            "geographic_scope": "Brasil inteiro",
             "active_only": settings.filter_active_only,
             "include_secondary_cnae": settings.filter_include_secondary_cnae,
             "require_nome_fantasia": settings.filter_require_nome_fantasia,
@@ -194,7 +195,6 @@ def start_injector(config: InjectorConfig):
             "inputs": {
                 "competence": config.competence,
                 "filter_cnaes": config.cnaes,
-                "filter_ufs": config.ufs,
                 "active_only": str(config.active_only).lower(),
                 "include_secondary_cnae": str(config.include_secondary_cnae).lower(),
                 "require_nome_fantasia": str(config.require_nome_fantasia).lower(),

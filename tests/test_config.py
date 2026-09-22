@@ -9,6 +9,10 @@ def _reload_config(monkeypatch, **env):
         "FILTER_CNAES",
         "FILTER_ACTIVE_ONLY",
         "FILTER_CNAE_INCLUDE_SECONDARY",
+        "FILTER_UF",
+        "FILTER_MIN_POPULATION",
+        "FILTER_REQUIRE_NOME_FANTASIA",
+        "FILTER_REQUIRE_TELEFONE",
     ):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
@@ -42,9 +46,18 @@ def test_empty_filter_active_only_defaults_true(monkeypatch):
 
 def test_min_population_default(monkeypatch):
     config = _reload_config(monkeypatch)
-    assert config._parse_min_population() == 50000
+    assert config._parse_min_population() == 0
 
 
 def test_min_population_disabled(monkeypatch):
     config = _reload_config(monkeypatch, FILTER_MIN_POPULATION="0")
     assert config._parse_min_population() == 0
+
+
+def test_national_and_broad_contact_defaults(monkeypatch):
+    config = _reload_config(monkeypatch)
+    settings = config.Settings()
+    assert settings.filter_ufs == frozenset()
+    assert settings.filter_include_secondary_cnae is True
+    assert settings.filter_require_nome_fantasia is False
+    assert settings.filter_require_telefone is False
