@@ -22,7 +22,11 @@ ALTER TABLE cnpj.prospectos_qualificados ADD COLUMN IF NOT EXISTS site_final_url
 CREATE INDEX IF NOT EXISTS idx_prospect_qual_status ON cnpj.prospectos_qualificados (qualification_status);
 CREATE INDEX IF NOT EXISTS idx_prospect_lead_score ON cnpj.prospectos_qualificados (lead_score DESC);
 
-CREATE OR REPLACE VIEW cnpj.v_prospectos_outreach_v2 AS
+-- A versão v3 pode depender desta view e a versão atual possui uma coluna a mais.
+-- PostgreSQL não permite remover colunas com CREATE OR REPLACE; recrie na ordem segura.
+DROP VIEW IF EXISTS cnpj.v_prospectos_outreach_v3;
+DROP VIEW IF EXISTS cnpj.v_prospectos_outreach_v2;
+CREATE VIEW cnpj.v_prospectos_outreach_v2 AS
 SELECT
   p.cnpj,
   p.razao_social,

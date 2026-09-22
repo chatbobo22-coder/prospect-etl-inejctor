@@ -40,3 +40,10 @@ def test_national_candidate_view_has_no_geographic_cutoff():
     assert "v.telefone_1" not in text
     assert "v.nome_fantasia" not in text
     assert "cnaes_fiscais_secundarios" in text
+
+
+def test_qualification_view_can_be_replayed_after_v3():
+    sql_dir = Path(__file__).resolve().parents[1] / "sql"
+    text = (sql_dir / "010_prospect_qualification_v2.sql").read_text(encoding="utf-8")
+    assert "DROP VIEW IF EXISTS cnpj.v_prospectos_outreach_v3;" in text
+    assert "DROP VIEW IF EXISTS cnpj.v_prospectos_outreach_v2;" in text
