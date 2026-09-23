@@ -59,6 +59,35 @@ jobs:
       - name: Install
         run: pip install .
 
+      - name: Verify Python curl wrapper
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          from cnpj_etl.source import RfbSource
+
+          source = RfbSource(
+              "https://arquivos.receitafederal.gov.br/index.php/s/YggdBLfdninEJX9",
+              timeout=30,
+          )
+          url = source._remote_url("2026-09", "Cnaes.zip")
+          status, _ = source._curl_probe(url)
+          assert status in (200, 206), status
+          print(f"python_curl_ok status={status} curl={source.curl_path}")
+          PY
+
+      - name: Verify Python competence discovery
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          from cnpj_etl.source import RfbSource
+
+          source = RfbSource(
+              "https://arquivos.receitafederal.gov.br/index.php/s/YggdBLfdninEJX9",
+              timeout=30,
+          )
+          print(f"competence={source.latest_competence()}")
+          PY
+
       - name: Verify Receita source without loading data
         run: |
           python - <<'PY'
