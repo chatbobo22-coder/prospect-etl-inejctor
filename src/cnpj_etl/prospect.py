@@ -87,8 +87,20 @@ def classify_lead_quality(row: dict, channel: str | None) -> str | None:
         digital_quality = "A" if delivery == "valid" else "B"
     elif lead >= 60 and confidence >= 70:
         digital_quality = "B"
+    public_quality = None
+    public_profile_verified = (
+        delivery == "valid"
+        and int(row.get("profile_score") or 0) >= 20
+        and int(row.get("data_confidence_score") or 0) >= 6
+        and (
+            int(row.get("intelligence_decision_makers_count") or 0) > 0
+            or float(row.get("capital_social") or 0) >= 100_000
+        )
+    )
+    if public_profile_verified:
+        public_quality = "B"
     if not _env_flag("STRICT_INTELLIGENCE_GATE", False):
-        return digital_quality
+        return digital_quality or public_quality
     profile_quality = row.get("profile_quality")
     if digital_quality not in {"A", "B"} or profile_quality not in {"A", "B"}:
         return None
@@ -147,9 +159,13 @@ def evaluate_qualification(row: dict) -> tuple[str, list[str], list[str]]:
     elif channel == "instagram":
         rejection.append("instagram_nao_automatico")
 
-    if confidence < min_confidence:
+    public_quality_b = quality == "B" and bool(
+        int(row.get("profile_score") or 0) >= 20
+        and int(row.get("data_confidence_score") or 0) >= 6
+    )
+    if confidence < min_confidence and not public_quality_b:
         rejection.append(f"confidence_baixa:{confidence}<{min_confidence}")
-    if lead < min_lead:
+    if lead < min_lead and not public_quality_b:
         rejection.append(f"lead_baixo:{lead}<{min_lead}")
 
     if (
@@ -174,6 +190,8 @@ def evaluate_qualification(row: dict) -> tuple[str, list[str], list[str]]:
     if channel in {"email_corporativo", "email_gratuito"}:
         reasons.append(channel)
         reasons.append(f"qualidade_{quality.lower()}" if quality else "sem_qualidade_a_b")
+    if public_quality_b:
+        reasons.append("perfil_publico_verificado")
     if channel == "telefone_comercial":
         reasons.append("telefone_comercial")
     if channel == "instagram":
@@ -238,6 +256,7 @@ def promote_qualified(conn) -> dict[str, int]:
           ev.risk_score AS email_risk_score,
           gm.is_primary AS group_primary, gm.group_key
           ,ip.profile_score, ip.profile_quality, ip.data_confidence_score,
+          ip.decision_makers_count AS intelligence_decision_makers_count,
           ip.capacity_score AS intelligence_capacity_score,
           ip.intent_score AS intelligence_intent_score,
           ip.estimated_capacity_band, ip.summary AS intelligence_summary,
@@ -311,6 +330,7 @@ def promote_qualified(conn) -> dict[str, int]:
         "profile_score",
         "profile_quality",
         "data_confidence_score",
+        "intelligence_decision_makers_count",
         "intelligence_capacity_score",
         "intelligence_intent_score",
         "estimated_capacity_band",

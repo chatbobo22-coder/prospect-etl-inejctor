@@ -58,5 +58,5 @@ def test_gdelt_rate_limit_is_recorded_as_retryable_skip(monkeypatch):
     )
 
     assert result.status == "skipped"
-    assert result.metadata["detail"] == "rate_limited"
+    assert result.metadata["reason"] == "rate_limited"
     assert result.metadata["status_code"] == 429

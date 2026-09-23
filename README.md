@@ -195,12 +195,16 @@ rodadas de 100, mantendo entrada e avaliação no mesmo teto de 4.000 empresas.
 
 O lote temporário é então verificado nas fontes Receita, qualidade técnica do e-mail,
 site institucional, RDAP, CVM e GDELT. Receita, qualidade do e-mail, site e domínio formam
-o núcleo obrigatório. CVM e GDELT acrescentam capacidade e intenção, mas indisponibilidade
-temporária dessas fontes não rejeita nem bloqueia um lead. A cada rodada, os A/B prontos são
-publicados incrementalmente em `outreach.leads`, sem aguardar o lote completo. Um lead só
-entra em `cnpj.prospectos_qualificados` se passar simultaneamente pelo score digital e pelo
-perfil de inteligência pública. A decisão compacta fica em `etl.candidate_decisions`; dados
-brutos e inteligência detalhada de rejeitados são apagados ao final da execução.
+o núcleo obrigatório. Assim que essas fontes rápidas terminam, os A/B são publicados em
+`outreach.leads`. O GDELT roda depois, em lotes pequenos, somente para leads A/B já
+publicados; portanto indisponibilidade, timeout ou rate limit da fonte nunca segura o
+comercial. Três falhas transitórias consecutivas abrem o circuit breaker e deixam o restante
+para a próxima execução horária. As retentativas usam intervalos de 1h, 6h e 24h.
+
+A decisão compacta fica em `etl.candidate_decisions`; dados brutos e inteligência detalhada
+de rejeitados são apagados ao final da execução. `STRICT_INTELLIGENCE_GATE` permanece
+desligado por padrão porque GDELT e CVM são enriquecimentos opcionais; habilite-o somente
+quando todas as fontes exigidas estiverem estáveis e cobrirem a base inteira.
 
 Provedores gratuitos, como Gmail e Hotmail, são aceitos quando os demais sinais confirmam
 a qualidade do lead. Endereços de contabilidade, fiscal, NFe, faturamento, cobrança, DP e RH
@@ -209,6 +213,10 @@ são bloqueados.
 - **A:** `lead_score >= 70`, `confidence_score >= 70` e ao menos um sinal forte
   (site válido, WhatsApp confirmado ou Google Business operacional).
 - **B:** `lead_score >= 60` e `confidence_score >= 70`.
+- **B por perfil público:** e-mail tecnicamente válido, `profile_score >= 20`, confiança
+  pública `>= 6` e ao menos um decisor cadastral ou capital social a partir de R$ 100 mil.
+  Essa alternativa mantém empresas sem site na esteira sem relaxar bloqueios de MEI,
+  backoffice, duplicidade de grupo ou e-mail inválido.
 
 Filtros recomendados para a carga:
 
@@ -225,7 +233,7 @@ FILTER_MIN_POPULATION=0
 PROSPECT_MIN_CONFIDENCE_SCORE=70
 PROSPECT_MIN_LEAD_SCORE=60
 PROSPECT_EXCLUDE_MEI=true
-STRICT_INTELLIGENCE_GATE=true
+STRICT_INTELLIGENCE_GATE=false
 ```
 
 A view `cnpj.v_prospectos_outreach_v3` entrega somente os leads aprovados A/B.

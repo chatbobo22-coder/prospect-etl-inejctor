@@ -1,4 +1,5 @@
 import argparse
+from dataclasses import replace
 import logging
 import os
 from pathlib import Path
@@ -205,10 +206,41 @@ def main():
                     synced_round,
                 )
 
-            intelligence_stats = run_intelligence_until_empty(
-                conn,
-                after_round=publish_round,
+            configured_intelligence = IntelligenceSettings()
+            fast_sources = tuple(
+                source for source in configured_intelligence.sources if source != "gdelt"
             )
+            slow_sources = tuple(
+                source for source in configured_intelligence.sources if source == "gdelt"
+            )
+            fast_stats = (
+                run_intelligence_until_empty(
+                    conn,
+                    replace(configured_intelligence, sources=fast_sources),
+                    after_round=publish_round,
+                )
+                if fast_sources
+                else {"processed": 0, "rounds": 0}
+            )
+            # Publica assim que as fontes essenciais/rápidas terminam. GDELT é opcional,
+            # limitado e executado depois para nunca segurar a fila comercial.
+            qualify_fast = promote_qualified(conn)
+            synced_fast = sync_qualified_leads(conn)
+            logging.info(
+                "Via rápida publicada: intelligence=%s qualify=%s outreach=%s",
+                fast_stats,
+                qualify_fast,
+                synced_fast,
+            )
+            slow_stats = (
+                run_intelligence(
+                    conn,
+                    replace(configured_intelligence, sources=slow_sources),
+                )
+                if slow_sources
+                else {"processed": 0}
+            )
+            intelligence_stats = {"fast": fast_stats, "optional": slow_stats}
             qualify_stats = promote_qualified(conn)
             synced = sync_qualified_leads(conn)
             retention_stats = prune_evaluated_candidates(conn)

@@ -63,6 +63,12 @@ def run_intelligence_until_empty(
             break
         if after_round:
             after_round(round_number + 1, stats)
+        if any(
+            source_stats.get("circuit_open")
+            for source_stats in stats.get("sources", {}).values()
+        ):
+            totals["circuit_open"] = 1
+            break
     return totals
 
 
@@ -72,7 +78,14 @@ def _run_source(conn, source_code: str, settings: IntelligenceSettings, *, force
         (source_code,),
     ).fetchone()[0]
     conn.commit()
-    stats = {"processed": 0, "success": 0, "no_data": 0, "failed": 0, "skipped": 0}
+    stats = {
+        "processed": 0,
+        "success": 0,
+        "no_data": 0,
+        "failed": 0,
+        "skipped": 0,
+        "circuit_open": 0,
+    }
     try:
         batch_size = (
             min(settings.batch_size, settings.gdelt_batch_size)
@@ -81,6 +94,7 @@ def _run_source(conn, source_code: str, settings: IntelligenceSettings, *, force
         )
         companies = _pending_companies(conn, source_code, batch_size, force=force)
         log.info("Inteligência %s: %s empresas", source_code, len(companies))
+        consecutive_errors = 0
         for company in companies:
             cnpj = company["cnpj"]
             _mark_running(conn, cnpj, source_code)
@@ -91,12 +105,18 @@ def _run_source(conn, source_code: str, settings: IntelligenceSettings, *, force
                 conn.commit()
                 stats["processed"] += 1
                 stats[result.status] = stats.get(result.status, 0) + 1
+                transient = result.status == "skipped" and result.metadata.get("reason") in {
+                    "rate_limited",
+                    "temporarily_unavailable",
+                }
+                consecutive_errors = consecutive_errors + 1 if transient else 0
             except Exception as exc:
                 conn.rollback()
                 _mark_failed(conn, cnpj, source_code, exc)
                 conn.commit()
                 stats["processed"] += 1
                 stats["failed"] += 1
+                consecutive_errors += 1
                 log.warning("Fonte %s falhou para %s: %s", source_code, cnpj, exc)
             delay_seconds = (
                 max(settings.delay_seconds, settings.gdelt_delay_seconds)
@@ -104,6 +124,17 @@ def _run_source(conn, source_code: str, settings: IntelligenceSettings, *, force
                 else settings.delay_seconds
             )
             time.sleep(delay_seconds)
+            if (
+                source_code == "gdelt"
+                and consecutive_errors >= settings.gdelt_circuit_breaker_errors
+            ):
+                stats["circuit_open"] = 1
+                log.warning(
+                    "Circuit breaker do GDELT aberto após %s erros consecutivos; "
+                    "restante ficará para a próxima execução",
+                    consecutive_errors,
+                )
+                break
         conn.execute(
             """
             UPDATE intelligence.source_runs SET finished_at=now(), status='success',
@@ -136,6 +167,15 @@ def _pending_companies(conn, source_code: str, limit: int, *, force: bool) -> li
         if force
         else "(s.cnpj IS NULL OR s.next_check_at IS NULL OR s.next_check_at <= now())"
     )
+    quality_gate = """
+        AND EXISTS (
+          SELECT 1
+          FROM cnpj.prospectos_qualificados prospect
+          WHERE prospect.cnpj=v.cnpj
+            AND prospect.qualification_status='qualified'
+            AND prospect.lead_quality IN ('A','B')
+        )
+    """ if source_code == "gdelt" else ""
     query = f"""
         SELECT v.cnpj, v.cnpj_basico, v.razao_social, v.nome_fantasia,
                v.capital_social, v.porte, v.data_inicio_atividade, v.email,
@@ -152,11 +192,14 @@ def _pending_companies(conn, source_code: str, limit: int, *, force: bool) -> li
         LEFT JOIN intelligence.company_source_state s
           ON s.cnpj=v.cnpj AND s.source_code=%s
         WHERE {where}
-        ORDER BY v.cnpj
+        {quality_gate}
+        ORDER BY
+          CASE WHEN %s='gdelt' THEN COALESCE(d.lead_score,0) ELSE 0 END DESC,
+          v.cnpj
         LIMIT %s
     """
     with conn.cursor(row_factory=dict_row) as cur:
-        cur.execute(query, (source_code, limit))
+        cur.execute(query, (source_code, source_code, limit))
         return list(cur.fetchall())
 
 
@@ -179,7 +222,12 @@ def _mark_failed(conn, cnpj: str, source_code: str, exc: Exception) -> None:
     conn.execute(
         """
         UPDATE intelligence.company_source_state SET status='failed', last_error=%s,
-          next_check_at=now()+interval '1 day', updated_at=now()
+          next_check_at=now()+CASE
+            WHEN source_code='gdelt' AND attempts<=1 THEN interval '1 hour'
+            WHEN source_code='gdelt' AND attempts=2 THEN interval '6 hours'
+            ELSE interval '1 day'
+          END,
+          updated_at=now()
         WHERE cnpj=%s AND source_code=%s
         """,
         (str(exc)[:2000], cnpj, source_code),
@@ -191,6 +239,19 @@ def _persist_result(conn, cnpj: str, result: SourceResult) -> None:
         "SELECT ttl_days FROM intelligence.source_registry WHERE source_code=%s",
         (result.source_code,),
     ).fetchone()[0]
+    attempts = conn.execute(
+        "SELECT attempts FROM intelligence.company_source_state "
+        "WHERE cnpj=%s AND source_code=%s",
+        (cnpj, result.source_code),
+    ).fetchone()[0]
+    transient_skip = result.status == "skipped" and result.metadata.get("reason") in {
+        "rate_limited",
+        "temporarily_unavailable",
+    }
+    retry_hours = 1 if attempts <= 1 else 6 if attempts == 2 else 24
+    next_check_delay = (
+        timedelta(hours=retry_hours) if transient_skip else timedelta(days=ttl)
+    )
     conn.execute(
         "UPDATE intelligence.company_people SET active=false,updated_at=now() WHERE cnpj=%s AND source_code=%s",
         (cnpj, result.source_code),
@@ -265,20 +326,14 @@ def _persist_result(conn, cnpj: str, result: SourceResult) -> None:
     conn.execute(
         """
         UPDATE intelligence.company_source_state SET status=%s, records_found=%s,
-          next_check_at=CASE
-            WHEN %s='skipped' AND (%s)::jsonb->>'reason'='temporarily_unavailable'
-              THEN now()+interval '1 hour'
-            ELSE now()+(%s || ' days')::interval
-          END,
+          next_check_at=now()+%s,
           last_error=NULL,
           metadata=%s,updated_at=now() WHERE cnpj=%s AND source_code=%s
         """,
         (
             result.status,
             records,
-            result.status,
-            Jsonb(result.metadata),
-            ttl,
+            next_check_delay,
             Jsonb(result.metadata),
             cnpj,
             result.source_code,

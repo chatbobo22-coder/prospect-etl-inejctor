@@ -331,8 +331,7 @@ def collect_gdelt(_: object, company: dict, settings: IntelligenceSettings) -> S
             "gdelt",
             status="skipped",
             metadata={
-                "reason": "temporarily_unavailable",
-                "detail": reason,
+                "reason": reason,
                 "status_code": status_code,
                 "error_type": type(exc).__name__,
             },

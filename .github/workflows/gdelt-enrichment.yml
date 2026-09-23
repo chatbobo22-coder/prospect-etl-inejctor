@@ -1,0 +1,55 @@
+name: GDELT Optional Enrichment
+
+on:
+  schedule:
+    # Lote pequeno a cada hora; nunca bloqueia a carga ou a publicação de contatos.
+    - cron: "15 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: gdelt-optional-enrichment
+  cancel-in-progress: false
+
+jobs:
+  enrich:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SQL_DIR: ${{ github.workspace }}/sql
+      GDELT_BATCH_SIZE: "25"
+      GDELT_TIMEOUT_SECONDS: "12"
+      GDELT_DELAY_SECONDS: "5.2"
+      GDELT_CIRCUIT_BREAKER_ERRORS: "3"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Load DATABASE_URL
+        env:
+          SECRET_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          VAR_DATABASE_URL: ${{ vars.DATABASE_URL }}
+        run: |
+          if [ -n "${SECRET_DATABASE_URL:-}" ]; then
+            echo "DATABASE_URL=${SECRET_DATABASE_URL}" >> "$GITHUB_ENV"
+          elif [ -n "${VAR_DATABASE_URL:-}" ]; then
+            echo "DATABASE_URL=${VAR_DATABASE_URL}" >> "$GITHUB_ENV"
+          else
+            echo "::error::DATABASE_URL não encontrado."
+            exit 1
+          fi
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install .
+
+      - name: Enrich qualified leads with GDELT
+        run: python -m cnpj_etl.cli intelligence-pipeline --sources gdelt --batch-size 25
+
+      - name: Refresh published lead profiles
+        run: python -m cnpj_etl.cli publish-ready

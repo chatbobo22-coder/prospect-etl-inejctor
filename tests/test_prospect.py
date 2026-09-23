@@ -131,6 +131,45 @@ def test_quality_b_is_qualified():
     assert "qualidade_b" in reasons
 
 
+def test_verified_public_profile_can_be_quality_b_without_a_website():
+    row = _base_row(
+        lead_score=10,
+        confidence_score=5,
+        site_valid=False,
+        site_reachable=False,
+        whatsapp_valid=False,
+        deliverability_status="valid",
+        profile_score=22,
+        data_confidence_score=8,
+        intelligence_decision_makers_count=1,
+        capital_social=10_000,
+    )
+
+    channel, *_ = select_contact_channel(row)
+    assert classify_lead_quality(row, channel) == "B"
+    status, rejection, reasons = evaluate_qualification(row)
+    assert status == "qualified"
+    assert not rejection
+    assert "perfil_publico_verificado" in reasons
+
+
+def test_public_profile_fallback_requires_valid_email():
+    row = _base_row(
+        lead_score=10,
+        confidence_score=5,
+        site_valid=False,
+        whatsapp_valid=False,
+        deliverability_status="risky",
+        profile_score=22,
+        data_confidence_score=8,
+        intelligence_decision_makers_count=1,
+        capital_social=100_000,
+    )
+
+    channel, *_ = select_contact_channel(row)
+    assert classify_lead_quality(row, channel) is None
+
+
 def test_backoffice_email_is_rejected_even_with_strong_scores():
     row = _base_row(email="nfe@empresa.com.br", email_tipo="corporativo")
     status, rejection, _ = evaluate_qualification(row)
