@@ -374,6 +374,10 @@ class RfbSource:
         self, remote: RemoteFile, destination: str, chunk_bytes: int
     ) -> tuple[str, int]:
         command = self._curl_command(remote.url)
+        # Receita accepts ranged downloads from GitHub-hosted runners but may
+        # close an otherwise identical plain GET. `0-` still transfers the
+        # complete file, from the first byte through EOF.
+        command[-1:-1] = ["--range", "0-"]
         digest, size, last_logged = hashlib.sha256(), 0, 0
         process = subprocess.Popen(
             command,

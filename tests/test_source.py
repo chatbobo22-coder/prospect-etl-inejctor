@@ -122,3 +122,32 @@ def test_curl_metadata_skips_redundant_preflight(monkeypatch):
     )
 
     assert source.metadata(remote) == (None, None)
+
+
+def test_curl_download_requests_complete_byte_range(monkeypatch, tmp_path):
+    source = RfbSource("https://example.test/index.php/s/share-token")
+    monkeypatch.setattr(source, "curl_path", "/usr/bin/curl")
+    remote = source.list_files("2026-09")[0]
+    observed = {}
+
+    class FakeStream:
+        def read(self, _size=-1):
+            return b""
+
+    class FakeProcess:
+        stdout = FakeStream()
+        stderr = FakeStream()
+
+        def wait(self):
+            return 0
+
+    def fake_popen(command, **_kwargs):
+        observed["command"] = command
+        return FakeProcess()
+
+    monkeypatch.setattr("cnpj_etl.source.subprocess.Popen", fake_popen)
+
+    source._download_with_curl(remote, str(tmp_path / "download.zip"), 1024)
+
+    range_index = observed["command"].index("--range")
+    assert observed["command"][range_index + 1] == "0-"
