@@ -633,6 +633,14 @@ def run_enrichment(
                 stats["processed"] += 1
                 status_key = result.enrich_status if result.enrich_status in stats else "partial"
                 stats[status_key] = stats.get(status_key, 0) + 1
+                if stats["processed"] == 1 or stats["processed"] % 10 == 0:
+                    log.info(
+                        "Enriquecimento em andamento: processados=%s/%s cnpj=%s status=%s",
+                        stats["processed"],
+                        len(rows),
+                        cnpj,
+                        result.enrich_status,
+                    )
             except Exception as exc:
                 conn.rollback()
                 stats["failed"] += 1

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from app import _runtime_log_lines, _sanitize_log_lines, _workflow_progress
 
 
@@ -77,3 +79,13 @@ def test_runtime_telemetry_errors_are_redacted():
     joined = "\n".join(lines)
     assert "user:pass" not in joined
     assert "DATABASE_URL=***" in joined
+
+
+def test_runtime_telemetry_uses_exact_counts_not_postgres_estimates():
+    source = (Path(__file__).parents[1] / "app.py").read_text(encoding="utf-8")
+
+    assert "SELECT count(*) FROM cnpj.estabelecimentos" in source
+    assert "SELECT count(*) FROM cnpj.digital_presenca" in source
+    assert "SELECT count(*) FROM cnpj.prospectos_qualificados" in source
+    assert "n_live_tup" not in source
+    assert "reltuples" not in source

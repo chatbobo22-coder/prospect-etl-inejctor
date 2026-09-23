@@ -340,14 +340,11 @@ def _database_telemetry(workflow_run_id: int) -> dict[str, Any]:
         counts = conn.execute(
             """
             SELECT
-              COALESCE((SELECT n_live_tup FROM pg_stat_user_tables
-                WHERE schemaname='cnpj' AND relname='estabelecimentos'),0),
-              COALESCE((SELECT n_live_tup FROM pg_stat_user_tables
-                WHERE schemaname='cnpj' AND relname='digital_presenca'),0),
-              COALESCE((SELECT c.reltuples::bigint FROM pg_class c
-                JOIN pg_namespace n ON n.oid=c.relnamespace
-                WHERE n.nspname='cnpj'
-                  AND c.relname='idx_prospect_outreach_quality'),0)
+              (SELECT count(*) FROM cnpj.estabelecimentos),
+              (SELECT count(*) FROM cnpj.digital_presenca),
+              (SELECT count(*) FROM cnpj.prospectos_qualificados
+                WHERE qualification_status='qualified'
+                  AND lead_quality IN ('A','B'))
             """
         ).fetchone()
         files = []
