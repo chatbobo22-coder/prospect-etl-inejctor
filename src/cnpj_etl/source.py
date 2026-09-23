@@ -378,29 +378,31 @@ class RfbSource:
         # but may close an otherwise identical plain or open-ended GET. The
         # upper bound is intentionally larger than every CNPJ ZIP; HTTP stops
         # naturally at the real EOF, so the complete file is transferred.
-        command[-1:-1] = ["--range", "0-999999999999"]
-        digest, size, last_logged = hashlib.sha256(), 0, 0
-        process = subprocess.Popen(
+        command.remove("--silent")
+        command[-1:-1] = [
+            "--progress-bar",
+            "--range",
+            "0-999999999999",
+            "--output",
+            destination,
+        ]
+        completed = subprocess.run(
             command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            check=False,
         )
-        assert process.stdout is not None
-        assert process.stderr is not None
-        with open(destination, "wb") as output:
-            while chunk := process.stdout.read(chunk_bytes):
-                output.write(chunk)
+        if completed.returncode:
+            raise requests.ConnectionError(
+                f"curl encerrou com código {completed.returncode} ao baixar {remote.name}"
+            )
+
+        digest, size, last_logged = hashlib.sha256(), 0, 0
+        with open(destination, "rb") as downloaded:
+            while chunk := downloaded.read(chunk_bytes):
                 digest.update(chunk)
                 size += len(chunk)
                 if size - last_logged >= DOWNLOAD_LOG_EVERY_BYTES:
-                    log.info("Download %s: %s recebidos", remote.name, fmt_bytes(size))
+                    log.info("Validação %s: %s lidos", remote.name, fmt_bytes(size))
                     last_logged = size
-        stderr = process.stderr.read().decode("utf-8", errors="replace").strip()
-        return_code = process.wait()
-        if return_code:
-            raise requests.ConnectionError(
-                stderr or f"curl encerrou com código {return_code} ao baixar {remote.name}"
-            )
         return digest.hexdigest(), size
 
     def _download_to_path(

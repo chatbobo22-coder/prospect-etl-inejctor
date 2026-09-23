@@ -130,24 +130,20 @@ def test_curl_download_requests_complete_byte_range(monkeypatch, tmp_path):
     remote = source.list_files("2026-09")[0]
     observed = {}
 
-    class FakeStream:
-        def read(self, _size=-1):
-            return b""
+    class FakeResult:
+        returncode = 0
 
-    class FakeProcess:
-        stdout = FakeStream()
-        stderr = FakeStream()
-
-        def wait(self):
-            return 0
-
-    def fake_popen(command, **_kwargs):
+    def fake_run(command, **_kwargs):
         observed["command"] = command
-        return FakeProcess()
+        destination = command[command.index("--output") + 1]
+        with open(destination, "wb") as output:
+            output.write(b"zip-content")
+        return FakeResult()
 
-    monkeypatch.setattr("cnpj_etl.source.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("cnpj_etl.source.subprocess.run", fake_run)
 
     source._download_with_curl(remote, str(tmp_path / "download.zip"), 1024)
 
     range_index = observed["command"].index("--range")
     assert observed["command"][range_index + 1] == "0-999999999999"
+    assert "--progress-bar" in observed["command"]
