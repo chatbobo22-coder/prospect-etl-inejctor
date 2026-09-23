@@ -69,9 +69,33 @@ class InjectorConfig(BaseModel):
     @classmethod
     def valid_ufs(cls, value: str) -> str:
         allowed = {
-            "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT",
-            "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO",
-            "RR", "SC", "SP", "SE", "TO",
+            "AC",
+            "AL",
+            "AP",
+            "AM",
+            "BA",
+            "CE",
+            "DF",
+            "ES",
+            "GO",
+            "MA",
+            "MT",
+            "MS",
+            "MG",
+            "PA",
+            "PB",
+            "PR",
+            "PE",
+            "PI",
+            "RJ",
+            "RN",
+            "RS",
+            "RO",
+            "RR",
+            "SC",
+            "SP",
+            "SE",
+            "TO",
         }
         values = [item.strip().upper() for item in value.split(",") if item.strip()]
         if any(item not in allowed for item in values):
@@ -112,6 +136,7 @@ class CommercialFeedback(BaseModel):
         if len(digits) != 14:
             raise ValueError("CNPJ inválido")
         return digits
+
 
 def _require_api_key(api_key: str | None = Security(_api_key_header)) -> None:
     if os.getenv("API_REQUIRE_AUTH", "false").lower() not in {"1", "true", "yes"}:
@@ -168,9 +193,7 @@ def _workflow_progress(status: str, steps: list[dict[str, Any]]) -> int:
 def _sanitize_log_lines(raw: str, limit: int = 500) -> list[str]:
     cleaned: list[str] = []
     ansi = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-    secret = re.compile(
-        r"(?i)(password|secret|token|api[_-]?key|database_url)\s*[=:]\s*\S+"
-    )
+    secret = re.compile(r"(?i)(password|secret|token|api[_-]?key|database_url)\s*[=:]\s*\S+")
     database_url = re.compile(r"(?i)postgres(?:ql)?://\S+")
     for line in raw.splitlines():
         line = ansi.sub("", line).strip()
@@ -242,6 +265,18 @@ def _runtime_log_lines(
         f"qualificadas A/B={int(counts.get('qualified') or 0):,}"
     )
 
+    intelligence = telemetry.get("intelligence") or {}
+    if intelligence:
+        source = intelligence.get("current_source") or intelligence.get("latest_source")
+        details = [
+            f"consultas concluídas={int(intelligence.get('completed_checks') or 0):,}",
+            f"perfis={int(intelligence.get('profiles') or 0):,}",
+            f"falhas={int(intelligence.get('failed_checks') or 0):,}",
+        ]
+        if source:
+            details.append(f"fonte={source}")
+        lines.append(f"[INTELIGÊNCIA] {' | '.join(details)}")
+
     storage = telemetry.get("storage") or {}
     schema_parts = [
         f"{name}={_format_runtime_bytes(size)}"
@@ -268,9 +303,7 @@ def _runtime_log_lines(
 
 def _github_run(run_id: int) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
     base = f"https://api.github.com/repos/{_github_repo()}/actions"
-    run_response = requests.get(
-        f"{base}/runs/{run_id}", headers=_github_headers(), timeout=20
-    )
+    run_response = requests.get(f"{base}/runs/{run_id}", headers=_github_headers(), timeout=20)
     if run_response.status_code == 404:
         raise HTTPException(status_code=404, detail="Execução não encontrada")
     if not run_response.ok:
@@ -326,9 +359,7 @@ def _database_telemetry(workflow_run_id: int) -> dict[str, Any]:
             ).fetchone()
         else:
             etl_run = None
-        database_bytes = conn.execute(
-            "SELECT pg_database_size(current_database())"
-        ).fetchone()[0]
+        database_bytes = conn.execute("SELECT pg_database_size(current_database())").fetchone()[0]
         schema_rows = conn.execute(
             """
             SELECT schemaname,COALESCE(sum(pg_total_relation_size(relid)),0)::bigint
@@ -345,6 +376,26 @@ def _database_telemetry(workflow_run_id: int) -> dict[str, Any]:
               (SELECT count(*) FROM cnpj.prospectos_qualificados
                 WHERE qualification_status='qualified'
                   AND lead_quality IN ('A','B'))
+            """
+        ).fetchone()
+        source_rows = conn.execute(
+            """
+            SELECT source_code,
+                   count(*) FILTER (WHERE status IN ('success','no_data','skipped'))::bigint,
+                   count(*) FILTER (WHERE status='failed')::bigint,
+                   count(*) FILTER (WHERE status='running')::bigint,
+                   count(*)::bigint
+            FROM intelligence.company_source_state
+            GROUP BY source_code
+            ORDER BY source_code
+            """
+        ).fetchall()
+        profiles = conn.execute("SELECT count(*) FROM intelligence.company_profiles").fetchone()[0]
+        latest_source_run = conn.execute(
+            """
+            SELECT source_code,status,processed,success,no_data,failed
+            FROM intelligence.source_runs
+            ORDER BY id DESC LIMIT 1
             """
         ).fetchone()
         files = []
@@ -387,6 +438,17 @@ def _database_telemetry(workflow_run_id: int) -> dict[str, Any]:
             "error": etl_run[8],
             "cancel_requested_at": etl_run[9].isoformat() if etl_run[9] else None,
         }
+    source_data = [
+        {
+            "source": row[0],
+            "completed": row[1],
+            "failed": row[2],
+            "running": row[3],
+            "total": row[4],
+        }
+        for row in source_rows
+    ]
+    latest_source = latest_source_run[0] if latest_source_run else None
     return {
         "etl_run": run_data,
         "files": files,
@@ -399,6 +461,26 @@ def _database_telemetry(workflow_run_id: int) -> dict[str, Any]:
             "companies": counts[0],
             "enriched": counts[1],
             "qualified": counts[2],
+        },
+        "intelligence": {
+            "profiles": profiles,
+            "completed_checks": sum(item["completed"] for item in source_data),
+            "failed_checks": sum(item["failed"] for item in source_data),
+            "running_checks": sum(item["running"] for item in source_data),
+            "current_source": (
+                latest_source if latest_source_run and latest_source_run[1] == "running" else None
+            ),
+            "latest_source": latest_source,
+            "latest_run": {
+                "status": latest_source_run[1],
+                "processed": latest_source_run[2],
+                "success": latest_source_run[3],
+                "no_data": latest_source_run[4],
+                "failed": latest_source_run[5],
+            }
+            if latest_source_run
+            else None,
+            "sources": source_data,
         },
     }
 
@@ -450,9 +532,7 @@ def injector_config():
             "min_population": settings.filter_min_population,
             "exclude_mei": os.getenv("PROSPECT_EXCLUDE_MEI", "true").lower()
             in {"1", "true", "yes", "on"},
-            "min_confidence_score": int(
-                os.getenv("PROSPECT_MIN_CONFIDENCE_SCORE", "70")
-            ),
+            "min_confidence_score": int(os.getenv("PROSPECT_MIN_CONFIDENCE_SCORE", "70")),
             "min_lead_score": int(os.getenv("PROSPECT_MIN_LEAD_SCORE", "60")),
             "force_etl": False,
             "force_enrich": False,

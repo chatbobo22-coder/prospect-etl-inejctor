@@ -50,6 +50,12 @@ def test_runtime_logs_finish_with_current_state_and_detailed_telemetry():
             }
         ],
         "counts": {"companies": 100, "enriched": 40, "qualified": 12},
+        "intelligence": {
+            "completed_checks": 180,
+            "profiles": 40,
+            "failed_checks": 2,
+            "current_source": "website",
+        },
         "storage": {"database_bytes": 4096, "schemas": {"cnpj": 2048}},
     }
 
@@ -58,6 +64,10 @@ def test_runtime_logs_finish_with_current_state_and_detailed_telemetry():
     assert any("[ARQUIVO:PROCESSING]" in line and "linhas=321" in line for line in lines)
     assert any("[ETL]" in line and "arquivos=2/10" in line for line in lines)
     assert any("qualificadas A/B=12" in line for line in lines)
+    assert any(
+        "[INTELIGÊNCIA]" in line and "consultas concluídas=180" in line and "fonte=website" in line
+        for line in lines
+    )
     assert lines[-1].startswith("[AGORA] Run ETL")
 
 
