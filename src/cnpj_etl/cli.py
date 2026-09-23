@@ -14,6 +14,7 @@ from .digital_enricher import (
 )
 from .ibge_population import ensure_municipios_populacao
 from .intelligence import IntelligenceSettings, run_intelligence, run_intelligence_until_empty
+from .outreach_sync import sync_qualified_leads
 from .pipeline import run
 from .prospect import promote_qualified
 from .retention import prune_evaluated_candidates
@@ -68,6 +69,10 @@ def main():
     sub.add_parser(
         "qualify-prospects",
         help="Promove enriquecidos qualificados para cnpj.prospectos_qualificados",
+    )
+    sub.add_parser(
+        "sync-outreach",
+        help="Sincroniza leads A/B qualificados com outreach.leads",
     )
     prospect = sub.add_parser(
         "prospect-pipeline",
@@ -158,6 +163,11 @@ def main():
         with db.connect() as conn:
             stats = promote_qualified(conn)
         logging.info("Qualificação concluída: %s", stats)
+    elif args.command == "sync-outreach":
+        db.migrate(sql_dir)
+        with db.connect() as conn:
+            synced = sync_qualified_leads(conn)
+        logging.info("Sincronização Outreach concluída: %s leads A/B", synced)
     elif args.command == "prospect-pipeline":
         db.migrate(sql_dir)
         batch_size = args.batch_size or int(os.getenv("ENRICH_BATCH_SIZE", "500"))

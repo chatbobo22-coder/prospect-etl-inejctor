@@ -208,6 +208,9 @@ jobs:
           fi
           python -m cnpj_etl.cli prospect-pipeline $args
 
+      - name: Sync qualified A/B leads to Outreach
+        run: python -m cnpj_etl.cli sync-outreach
+
       - name: Summary counts
         run: |
           python - <<'PY'
@@ -238,6 +241,9 @@ jobs:
               rejected = conn.execute(
                   "SELECT COUNT(*) FROM etl.candidate_decisions WHERE decision = 'rejected'"
               ).fetchone()[0]
+              outreach = conn.execute(
+                  "SELECT COUNT(*) FROM outreach.leads WHERE source = 'cnpj_etl'"
+              ).fetchone()[0]
               gplaces = conn.execute(
                   "SELECT COALESCE(SUM(google_places_requests),0) FROM etl.enrichment_runs "
                   "WHERE started_at > now() - interval '1 day'"
@@ -251,5 +257,6 @@ jobs:
           print(f"qualificados={qualified}")
           print(f"review_required={review}")
           print(f"rejeitados={rejected}")
+          print(f"sincronizados_outreach={outreach}")
           print(f"google_places_requests_24h={gplaces}")
           PY
