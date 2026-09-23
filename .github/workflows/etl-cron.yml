@@ -64,7 +64,6 @@ jobs:
 
       - name: Configure ETL filters
         run: |
-          DEFAULT_CNAES="4530703,4744099,4751201,4752100,4753900,4754701,4755503,4759899,4763601,4763602,4772500,4781400,4782201,4782202,4783101,4783102,4789001,4791201"
           echo "FILTER_ACTIVE_ONLY=true" >> "$GITHUB_ENV"
           echo "FILTER_REQUIRE_NOME_FANTASIA=false" >> "$GITHUB_ENV"
           echo "FILTER_REQUIRE_TELEFONE=false" >> "$GITHUB_ENV"
@@ -77,11 +76,7 @@ jobs:
           echo "CHUNK_SIZE=5000" >> "$GITHUB_ENV"
           echo "IBGE_POPULATION_YEAR=2024" >> "$GITHUB_ENV"
           echo "FILTER_CNAE_INCLUDE_SECONDARY=true" >> "$GITHUB_ENV"
-          if [ -n "${{ vars.FILTER_CNAES }}" ]; then
-            echo "FILTER_CNAES=${{ vars.FILTER_CNAES }}" >> "$GITHUB_ENV"
-          else
-            echo "FILTER_CNAES=$DEFAULT_CNAES" >> "$GITHUB_ENV"
-          fi
+          echo "FILTER_CNAES=" >> "$GITHUB_ENV"
           # Carga nacional — não aplicar FILTER_UF mesmo se existir nos variables do GitHub
 
       - name: Check database connection

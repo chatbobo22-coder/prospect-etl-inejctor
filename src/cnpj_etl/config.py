@@ -5,9 +5,7 @@ from urllib.parse import quote
 
 from dotenv import load_dotenv
 
-from .filters import DEFAULT_FILTER_CNAES, FILTER_FILE_TYPES, normalize_cnae
-
-DEFAULT_FILTER_CNAES_CSV = ",".join(sorted(DEFAULT_FILTER_CNAES))
+from .filters import FILTER_FILE_TYPES, normalize_cnae
 
 load_dotenv()
 
@@ -24,7 +22,7 @@ def _parse_filter_cnaes() -> frozenset[str]:
         return frozenset()
     raw = os.getenv("FILTER_CNAES")
     if raw is None or not raw.strip():
-        return DEFAULT_FILTER_CNAES
+        return frozenset()
     raw = raw.strip()
     if raw.lower() in {"none", "off", "false", "*", "all"}:
         return frozenset()
@@ -103,6 +101,7 @@ class Settings:
         filter(None, os.getenv("INCLUDE_TYPES", "").split(","))
     )
     keep_downloads: bool = _env_flag("KEEP_DOWNLOADS")
+    disable_filters: bool = _env_flag("DISABLE_FILTERS")
     filter_cnaes: frozenset[str] = field(default_factory=_parse_filter_cnaes)
     filter_active_only: bool = _env_flag("FILTER_ACTIVE_ONLY", "true")
     filter_include_secondary_cnae: bool = _env_flag("FILTER_CNAE_INCLUDE_SECONDARY", "true")
@@ -118,11 +117,11 @@ class Settings:
     filter_ufs: frozenset[str] = field(default_factory=_parse_filter_ufs)
 
     def filters_enabled(self) -> bool:
-        return bool(self.filter_cnaes)
+        return not self.disable_filters
 
     def resolved_file_types(self) -> frozenset[str]:
         if self.include_types:
             return self.include_types
-        if self.filter_cnaes:
+        if self.filters_enabled():
             return FILTER_FILE_TYPES
         return frozenset()

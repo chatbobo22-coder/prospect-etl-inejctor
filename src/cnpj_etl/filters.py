@@ -7,30 +7,6 @@ from .enrichment.email import is_blocked_outreach_email, is_valid_email
 
 ACTIVE_STATUS = "02"
 
-# Lista exata solicitada — usada quando FILTER_CNAES não está definido
-DEFAULT_FILTER_CNAES = frozenset(
-    {
-        "4791201",
-        "4781400",
-        "4782201",
-        "4782202",
-        "4783101",
-        "4783102",
-        "4772500",
-        "4763601",
-        "4763602",
-        "4755503",
-        "4754701",
-        "4753900",
-        "4751201",
-        "4752100",
-        "4789001",
-        "4759899",
-        "4530703",
-        "4744099",
-    }
-)
-
 FILTER_FILE_TYPES = frozenset(
     {
         "Cnaes",
@@ -63,6 +39,7 @@ FILE_LOAD_ORDER = {
 @dataclass
 class FilterContext:
     cnaes: frozenset[str]
+    apply_filters: bool = True
     active_only: bool = True
     ufs: frozenset[str] = field(default_factory=frozenset)
     include_secondary_cnae: bool = False
@@ -81,7 +58,7 @@ class FilterContext:
 
     @property
     def enabled(self) -> bool:
-        return bool(self.cnaes)
+        return self.apply_filters
 
     def sort_key(self, file_type: str) -> tuple[int, str]:
         return (FILE_LOAD_ORDER.get(file_type, 99), file_type)
@@ -202,6 +179,8 @@ def should_load_row(kind: str, item: dict, ctx: FilterContext | None) -> bool:
     if kind == "Estabelecimentos":
         return matches_estabelecimento(item, ctx)
     if kind == "Cnaes":
+        if not ctx.cnaes:
+            return True
         return normalize_cnae(item.get("codigo")) in ctx.cnaes
     if kind in {"Empresas", "Simples", "Socios"}:
         return (item.get("cnpj_basico") or "") in ctx.matched_basics

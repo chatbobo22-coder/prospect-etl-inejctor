@@ -14,7 +14,7 @@ on:
         required: false
         type: string
       filter_cnaes:
-        description: "CNAEs separados por vírgula (vazio = padrão do projeto)"
+        description: "CNAEs separados por vírgula (vazio = todos)"
         required: false
         type: string
       active_only:
@@ -138,7 +138,6 @@ jobs:
         env:
           SPEEDIO_KEY: ${{ secrets.ENRICH_EXTERNAL_API_KEY }}
         run: |
-          DEFAULT_CNAES="4530703,4744099,4751201,4752100,4753900,4754701,4755503,4759899,4763601,4763602,4772500,4781400,4782201,4782202,4783101,4783102,4789001,4791201"
           echo "FILTER_ACTIVE_ONLY=${{ inputs.active_only != false }}" >> "$GITHUB_ENV"
           echo "FILTER_REQUIRE_NOME_FANTASIA=${{ inputs.require_nome_fantasia == true }}" >> "$GITHUB_ENV"
           echo "FILTER_REQUIRE_TELEFONE=${{ inputs.require_telefone == true }}" >> "$GITHUB_ENV"
@@ -174,10 +173,8 @@ jobs:
           fi
           if [ -n "${{ inputs.filter_cnaes }}" ]; then
             echo "FILTER_CNAES=${{ inputs.filter_cnaes }}" >> "$GITHUB_ENV"
-          elif [ -n "${{ vars.FILTER_CNAES }}" ]; then
-            echo "FILTER_CNAES=${{ vars.FILTER_CNAES }}" >> "$GITHUB_ENV"
           else
-            echo "FILTER_CNAES=$DEFAULT_CNAES" >> "$GITHUB_ENV"
+            echo "FILTER_CNAES=" >> "$GITHUB_ENV"
           fi
           if [ -n "${SPEEDIO_KEY:-}" ]; then
             echo "ENRICH_EXTERNAL_API_KEY=${SPEEDIO_KEY}" >> "$GITHUB_ENV"

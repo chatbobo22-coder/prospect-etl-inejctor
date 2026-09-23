@@ -1,7 +1,6 @@
 from datetime import date
 
 from cnpj_etl.filters import (
-    DEFAULT_FILTER_CNAES,
     FilterContext,
     has_eligible_email,
     has_minimum_activity_age,
@@ -80,32 +79,23 @@ def test_uf_filter():
     assert matches_estabelecimento(item, ctx)
 
 
-def test_default_cnaes_count():
-    assert len(DEFAULT_FILTER_CNAES) == 18
-
-
-def test_default_cnaes_match_user_list():
-    expected = {
-        "4791201",
-        "4781400",
-        "4782201",
-        "4782202",
-        "4783101",
-        "4783102",
-        "4772500",
-        "4763601",
-        "4763602",
-        "4755503",
-        "4754701",
-        "4753900",
-        "4751201",
-        "4752100",
-        "4789001",
-        "4759899",
-        "4530703",
-        "4744099",
+def test_empty_cnae_list_accepts_any_activity_but_keeps_quality_filters():
+    ctx = FilterContext(
+        frozenset(),
+        active_only=True,
+        require_nome_fantasia=False,
+        require_telefone=False,
+        require_email=True,
+        block_backoffice_email=True,
+    )
+    good = {
+        "cnpj": "12345678000190",
+        "situacao_cadastral": "02",
+        "cnae_fiscal_principal": "6201501",
+        "correio_eletronico": "diretoria@empresa.com.br",
     }
-    assert DEFAULT_FILTER_CNAES == frozenset(expected)
+    assert matches_estabelecimento(good, ctx)
+    assert not matches_estabelecimento({**good, "correio_eletronico": "nfe@empresa.com.br"}, ctx)
 
 
 def test_rejects_empty_nome_fantasia():

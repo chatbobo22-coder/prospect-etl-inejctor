@@ -25,18 +25,24 @@ def prepare_run_settings(settings, db, auto_bootstrap: bool = False):
                 uf_msg = (
                     f", UFs={','.join(sorted(settings.filter_ufs))}" if settings.filter_ufs else ""
                 )
-                cnae_mode = (
-                    "principal+secundário"
-                    if settings.filter_include_secondary_cnae
-                    else "somente principal"
-                )
-                log.info(
-                    "Base vazia — carga filtrada (%s CNAEs %s, somente ativas%s)",
-                    len(settings.filter_cnaes),
-                    cnae_mode,
-                    uf_msg,
-                )
-                log.info("CNAEs: %s", ", ".join(sorted(settings.filter_cnaes)))
+                if settings.filter_cnaes:
+                    cnae_mode = (
+                        "principal+secundário"
+                        if settings.filter_include_secondary_cnae
+                        else "somente principal"
+                    )
+                    log.info(
+                        "Base vazia — carga filtrada (%s CNAEs %s, somente ativas%s)",
+                        len(settings.filter_cnaes),
+                        cnae_mode,
+                        uf_msg,
+                    )
+                    log.info("CNAEs: %s", ", ".join(sorted(settings.filter_cnaes)))
+                else:
+                    log.info(
+                        "Base vazia — carga de qualidade em todos os CNAEs (somente ativas%s)",
+                        uf_msg,
+                    )
                 extras = []
                 if settings.filter_require_nome_fantasia:
                     extras.append("nome fantasia obrigatório")
@@ -49,9 +55,7 @@ def prepare_run_settings(settings, db, auto_bootstrap: bool = False):
                 if settings.filter_headquarters_only:
                     extras.append("somente matrizes")
                 if settings.filter_max_candidates_per_run > 0:
-                    extras.append(
-                        f"até {settings.filter_max_candidates_per_run} candidatos novos"
-                    )
+                    extras.append(f"até {settings.filter_max_candidates_per_run} candidatos novos")
                 if settings.filter_min_activity_months > 0:
                     extras.append(f"atividade >= {settings.filter_min_activity_months} meses")
                 if settings.filter_min_population > 0:
@@ -147,7 +151,10 @@ def run(
     all_files = source.list_files(competence)
     allowed = settings.resolved_file_types()
     files = [f for f in all_files if not allowed or f.file_type in allowed]
-    files = sort_files(files, filter_ctx or FilterContext(frozenset()))
+    files = sort_files(
+        files,
+        filter_ctx or FilterContext(frozenset(), apply_filters=False),
+    )
     if settings.keep_downloads:
         target = settings.data_dir / competence
         target.mkdir(parents=True, exist_ok=True)

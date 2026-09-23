@@ -118,11 +118,16 @@ def main():
             raise SystemExit(
                 "Filtros CNAE desabilitados. Remova DISABLE_FILTERS ou defina FILTER_CNAES."
             )
-        logging.info(
-            "CNAEs (%s): %s", len(settings.filter_cnaes), ", ".join(sorted(settings.filter_cnaes))
-        )
+        if settings.filter_cnaes:
+            logging.info(
+                "CNAEs (%s): %s",
+                len(settings.filter_cnaes),
+                ", ".join(sorted(settings.filter_cnaes)),
+            )
+            logging.info("CNAE principal only: %s", not settings.filter_include_secondary_cnae)
+        else:
+            logging.info("CNAEs: todos (sem lista fixa)")
         logging.info("Ativas only: %s", settings.filter_active_only)
-        logging.info("CNAE principal only: %s", not settings.filter_include_secondary_cnae)
         logging.info("Somente matrizes: %s", settings.filter_headquarters_only)
         logging.info("E-mail válido obrigatório: %s", settings.filter_require_email)
         logging.info("E-mail backoffice bloqueado: %s", settings.filter_block_backoffice_email)

@@ -1,7 +1,5 @@
 import importlib
 
-from cnpj_etl.filters import DEFAULT_FILTER_CNAES
-
 
 def _reload_config(monkeypatch, **env):
     for key in (
@@ -23,15 +21,16 @@ def _reload_config(monkeypatch, **env):
     return importlib.reload(config)
 
 
-def test_empty_filter_cnaes_uses_defaults(monkeypatch):
+def test_empty_filter_cnaes_means_all_cnaes(monkeypatch):
     config = _reload_config(monkeypatch, FILTER_CNAES="")
-    assert config._parse_filter_cnaes() == DEFAULT_FILTER_CNAES
+    assert config._parse_filter_cnaes() == frozenset()
     assert config.Settings().filters_enabled()
 
 
-def test_unset_filter_cnaes_uses_defaults(monkeypatch):
+def test_unset_filter_cnaes_means_all_cnaes(monkeypatch):
     config = _reload_config(monkeypatch)
-    assert config._parse_filter_cnaes() == DEFAULT_FILTER_CNAES
+    assert config._parse_filter_cnaes() == frozenset()
+    assert config.Settings().filters_enabled()
 
 
 def test_disable_filters(monkeypatch):

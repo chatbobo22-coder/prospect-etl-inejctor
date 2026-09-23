@@ -186,8 +186,9 @@ ORDER BY lead_score DESC;
 
 A qualificação v4 mantém permanentemente somente empresas com e-mail válido e qualidade
 `A` ou `B`. A leitura da Receita faz primeiro uma triagem barata antes do banco: empresa
-ativa, matriz, e-mail válido, endereço não contábil/fiscal/NFe, pelo menos 12 meses de
-atividade e CNAE aderente. Cada execução admite no máximo 4.000 candidatos novos para
+ativa, matriz, e-mail válido, endereço não contábil/fiscal/NFe e pelo menos 12 meses de
+atividade. Por padrão, todos os CNAEs são aceitos; `FILTER_CNAES` pode restringir a carga
+quando houver uma campanha segmentada. Cada execução admite no máximo 4.000 candidatos novos para
 impedir que a área temporária cresça mais rápido do que o enriquecimento.
 O enriquecimento digital usa oito rodadas de 500 registros e a inteligência usa quarenta
 rodadas de 100, mantendo entrada e avaliação no mesmo teto de 4.000 empresas.

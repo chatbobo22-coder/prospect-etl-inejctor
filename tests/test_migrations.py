@@ -11,6 +11,7 @@ def test_migrations_idempotent():
         + sorted(sql_dir.glob("013_*.sql"))
         + sorted(sql_dir.glob("014_*.sql"))
         + sorted(sql_dir.glob("016_*.sql"))
+        + sorted(sql_dir.glob("017_*.sql"))
     ):
         text = path.read_text(encoding="utf-8")
         assert "IF NOT EXISTS" in text or "CREATE OR REPLACE" in text or "DO $$" in text
@@ -42,6 +43,15 @@ def test_national_candidate_view_has_no_geographic_cutoff():
     assert "v.telefone_1" not in text
     assert "v.nome_fantasia" not in text
     assert "cnaes_fiscais_secundarios" in text
+
+
+def test_all_cnae_candidate_view_has_no_cnae_whitelist():
+    sql_dir = Path(__file__).resolve().parents[1] / "sql"
+    text = (sql_dir / "017_all_cnae_quality_candidates.sql").read_text(encoding="utf-8")
+    assert "v.cnae_fiscal_principal IN" not in text
+    assert "cnaes_fiscais_secundarios" not in text
+    assert "v.situacao_cadastral = '02'" in text
+    assert "v.email IS NOT NULL" in text
 
 
 def test_qualification_view_can_be_replayed_after_v3():
