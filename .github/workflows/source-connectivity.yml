@@ -32,6 +32,8 @@ jobs:
       - name: Verify Receita source without loading data
         run: |
           python - <<'PY'
+          import zipfile
+
           from cnpj_etl.source import RfbSource
 
           source = RfbSource(
@@ -40,9 +42,10 @@ jobs:
           )
           competence = source.latest_competence()
           files = source.list_files(competence)
-          size, modified = source.metadata(files[0])
-          print(
-              f"source_ok competence={competence} files={len(files)} "
-              f"first_size={size} modified={modified}"
-          )
+          with source.temporary_download(files[0], 1024 * 1024) as (path, digest, size):
+              assert zipfile.is_zipfile(path)
+              print(
+                  f"source_ok competence={competence} files={len(files)} "
+                  f"first_size={size} sha256={digest[:12]}"
+              )
           PY

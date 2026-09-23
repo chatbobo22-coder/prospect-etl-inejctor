@@ -297,13 +297,14 @@ class RfbSource:
 
     def latest_competence(self) -> str:
         if self.mode == "nextcloud":
-            for competence in recent_competences():
-                if self._file_exists(self._remote_url(competence, "Cnaes.zip")):
-                    log.info("Competência mais recente confirmada por HTTP GET: %s", competence)
-                    return competence
-            raise RuntimeError(
-                "Nenhuma competência recente da Receita Federal respondeu por HTTP GET"
-            )
+            # Receita publishes the CNPJ export in monthly folders. Avoid a
+            # preflight request here because its public server rate-limits
+            # GitHub-hosted runners; the first real file download is the source
+            # availability check. Operators can still pass --competence when a
+            # previous month needs to be selected explicitly.
+            competence = recent_competences(months=1)[0]
+            log.info("Competência automática pelo mês corrente: %s", competence)
+            return competence
         else:
             soup = BeautifulSoup(self._get(self.base_url).text, "html.parser")
             values = []

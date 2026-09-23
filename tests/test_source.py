@@ -67,20 +67,16 @@ def test_recent_competences_crosses_year_boundary():
     ]
 
 
-def test_latest_competence_uses_regular_file_get(monkeypatch):
+def test_latest_competence_uses_current_month_without_preflight(monkeypatch):
     source = RfbSource("https://example.test/index.php/s/share-token")
-    probes = []
+    monkeypatch.setattr("cnpj_etl.source.recent_competences", lambda months: ["2026-09"])
+    monkeypatch.setattr(
+        source,
+        "_file_exists",
+        lambda _url: (_ for _ in ()).throw(AssertionError("unexpected preflight")),
+    )
 
-    def fake_exists(url):
-        probes.append(url)
-        return "/2026-08/" in url
-
-    monkeypatch.setattr("cnpj_etl.source.recent_competences", lambda: ["2026-09", "2026-08"])
-    monkeypatch.setattr(source, "_file_exists", fake_exists)
-
-    assert source.latest_competence() == "2026-08"
-    assert len(probes) == 2
-    assert all("Cnaes.zip" in url for url in probes)
+    assert source.latest_competence() == "2026-09"
 
 
 def test_nextcloud_file_list_uses_official_37_file_contract():
