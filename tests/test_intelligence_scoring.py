@@ -45,3 +45,23 @@ def test_expired_signal_is_not_scored():
     assert profile["intent_score"] == 0
     assert profile["signals_count"] == 0
     assert profile["profile_quality"] is None
+
+
+def test_delivery_risk_reduces_profile_score():
+    now = datetime.now(timezone.utc)
+    base = [
+        {"category": "fit", "score": 25, "confidence": 100, "title": "Fit", "source_code": "receita", "observed_at": now},
+        {"category": "capacity", "score": 20, "confidence": 100, "title": "Capacidade", "source_code": "cvm", "observed_at": now},
+        {"category": "intent", "score": 25, "confidence": 100, "title": "Intenção", "source_code": "gdelt", "observed_at": now},
+        {"category": "pain", "score": 20, "confidence": 100, "title": "Dor", "source_code": "website", "observed_at": now},
+    ]
+    states = [{"source_code": code, "status": "success"} for code in ("receita", "cvm", "gdelt", "website")]
+    without_risk = calculate_profile(base, [], states)
+    with_risk = calculate_profile(
+        base + [{"category": "risk", "score": 20, "confidence": 100, "title": "Bounce", "source_code": "commercial_feedback", "observed_at": now}],
+        [],
+        states,
+    )
+
+    assert with_risk["profile_score"] == without_risk["profile_score"] - 20
+    assert with_risk["risk_penalty"] == 20

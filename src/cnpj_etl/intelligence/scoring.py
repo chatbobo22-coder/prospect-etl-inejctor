@@ -28,6 +28,16 @@ def calculate_profile(signals: list[dict], people: list[dict], states: list[dict
         {s["source_code"] for s in states if s.get("status") in {"pending", "failed"}}
     )
     confidence = min(10, len(succeeded) * 2 + (1 if active else 0) + (1 if people else 0))
+    risk_penalty = min(
+        20,
+        round(
+            sum(
+                abs(int(s.get("score") or 0)) * int(s.get("confidence") or 0) / 100
+                for s in active
+                if s.get("category") == "risk"
+            )
+        ),
+    )
     recent_intent = [
         s
         for s in active
@@ -35,7 +45,7 @@ def calculate_profile(signals: list[dict], people: list[dict], states: list[dict
         and _aware(s.get("observed_at") or now) >= now - timedelta(days=90)
         and int(s.get("score") or 0) > 0
     ]
-    total = sum(scores.values()) + confidence
+    total = max(0, min(100, sum(scores.values()) + confidence - risk_penalty))
     quality = "A" if total >= 75 and confidence >= 7 and recent_intent else None
     if not quality and total >= 60 and confidence >= 6:
         quality = "B"
@@ -66,6 +76,7 @@ def calculate_profile(signals: list[dict], people: list[dict], states: list[dict
         "sources_pending": pending,
         "summary": "; ".join(summary_parts).capitalize() + ".",
         "reasons": reasons,
+        "risk_penalty": risk_penalty,
     }
 
 

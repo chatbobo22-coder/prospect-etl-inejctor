@@ -10,6 +10,7 @@ dependencies = [
   "python-dotenv>=1.0,<2",
   "tenacity>=9,<10",
   "fastapi>=0.117,<1",
+  "dnspython>=2.7,<3",
 ]
 
 [project.optional-dependencies]

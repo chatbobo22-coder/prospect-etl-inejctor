@@ -132,3 +132,17 @@ def test_mei_is_rejected_by_default():
     status, rejection, _ = evaluate_qualification(_base_row(opcao_mei="S"))
     assert status == "rejected"
     assert "mei_excluido" in rejection
+
+
+def test_email_waits_for_technical_verification():
+    status, rejection, _ = evaluate_qualification(
+        _base_row(deliverability_status=None)
+    )
+    assert status == "rejected"
+    assert "email_aguardando_verificacao" in rejection
+
+
+def test_risky_email_cannot_be_quality_a():
+    row = _base_row(deliverability_status="risky")
+    channel, *_ = select_contact_channel(row)
+    assert classify_lead_quality(row, channel) == "B"

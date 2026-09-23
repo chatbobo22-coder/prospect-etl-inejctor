@@ -66,6 +66,9 @@ def classify_lead_quality(row: dict, channel: str | None) -> str | None:
     """Classifica apenas leads prontos para outreach em qualidade A ou B."""
     if channel not in {"email_corporativo", "email_gratuito"}:
         return None
+    delivery = row.get("deliverability_status", "valid")
+    if delivery not in {"valid", "risky", "unknown"}:
+        return None
     lead = int(row.get("lead_score") or row.get("digital_score") or 0)
     confidence = int(row.get("confidence_score") or row.get("digital_score") or 0)
     has_strong_signal = bool(
@@ -74,7 +77,7 @@ def classify_lead_quality(row: dict, channel: str | None) -> str | None:
         or row.get("google_business_status") == "OPERATIONAL"
     )
     if lead >= 70 and confidence >= 70 and has_strong_signal:
-        return "A"
+        return "A" if delivery == "valid" else "B"
     if lead >= 60 and confidence >= 70:
         return "B"
     return None
@@ -112,6 +115,12 @@ def evaluate_qualification(row: dict) -> tuple[str, list[str], list[str]]:
         rejection.append("email_backoffice_bloqueado")
     if quality is None:
         rejection.append("fora_qualidade_a_b")
+    if row.get("deliverability_status") == "invalid":
+        rejection.append("email_tecnicamente_invalido")
+    if "deliverability_status" in row and not row.get("deliverability_status"):
+        rejection.append("email_aguardando_verificacao")
+    if row.get("group_primary") is False:
+        rejection.append("empresa_secundaria_do_mesmo_grupo")
     if _env_flag("PROSPECT_EXCLUDE_MEI", True) and row.get("opcao_mei") == "S":
         rejection.append("mei_excluido")
     if not channel or contact_conf < 50:
@@ -162,6 +171,8 @@ def evaluate_qualification(row: dict) -> tuple[str, list[str], list[str]]:
         "instagram_nao_automatico",
         "email_invalido_ou_ausente",
         "email_backoffice_bloqueado",
+        "email_tecnicamente_invalido",
+        "email_aguardando_verificacao",
         "fora_qualidade_a_b",
         "mei_excluido",
     }
@@ -176,6 +187,8 @@ def evaluate_qualification(row: dict) -> tuple[str, list[str], list[str]]:
     if "instagram_nao_automatico" in rejection and len(hard_fail) == 1:
         return "review_required", rejection, reasons
     if "site_nao_validado" in rejection and not hard_fail:
+        return "review_required", rejection, reasons
+    if "empresa_secundaria_do_mesmo_grupo" in rejection and not hard_fail:
         return "review_required", rejection, reasons
     if hard_fail:
         return "rejected", rejection, reasons
@@ -202,8 +215,13 @@ def promote_qualified(conn) -> dict[str, int]:
           d.faixa_faturamento_estimada, d.faixa_porte_receita,
           v.capital_social, v.opcao_mei, v.opcao_simples,
           d.email_tipo, d.email_original, d.sinais
+          ,CASE WHEN ev.expires_at>now() THEN ev.deliverability_status END,
+          ev.risk_score AS email_risk_score,
+          gm.is_primary AS group_primary, gm.group_key
         FROM cnpj.v_prospect_candidates v
         JOIN cnpj.digital_presenca d ON d.cnpj = v.cnpj
+        LEFT JOIN intelligence.email_verifications ev ON ev.cnpj=v.cnpj
+        LEFT JOIN intelligence.company_group_members gm ON gm.cnpj=v.cnpj
         WHERE d.enrich_status IN ('done', 'partial', 'no_site', 'failed')
         """
     ).fetchall()
@@ -252,6 +270,10 @@ def promote_qualified(conn) -> dict[str, int]:
         "email_tipo",
         "email_original",
         "sinais",
+        "deliverability_status",
+        "email_risk_score",
+        "group_primary",
+        "group_key",
     ]
 
     stats = {"qualified": 0, "rejected": 0, "review_required": 0, "blocked": 0, "updated": 0}

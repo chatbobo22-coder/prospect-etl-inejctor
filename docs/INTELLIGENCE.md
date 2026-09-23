@@ -20,6 +20,7 @@ consultado.
 | INPI | conector configurável | marcas e patentes; a API pública por CNPJ ainda não é estável |
 | Meta/Google Ads | conector configurável | anúncios ativos por provedor autorizado |
 | Pessoas | conector licenciado | perfis profissionais e contatos corporativos licenciados |
+| Qualidade do e-mail | pronta | sintaxe, domínio descartável, MX, função da caixa e risco de entrega |
 
 PNCP, INPI, anúncios e provedor de pessoas aceitam uma URL configurável no formato
 `*_LOOKUP_URL_TEMPLATE`. O retorno deve conter `people` e/ou `signals`. Uma fonte sem credencial
@@ -31,6 +32,24 @@ São armazenados somente dados profissionais publicados pela própria empresa, d
 públicos ou dados recebidos de um provedor licenciado. O coletor do site lê `Person` em JSON-LD e
 links profissionais associados. Não raspa LinkedIn, não tenta descobrir e-mail pessoal e não
 armazena CPF, endereço residencial ou telefone privado.
+
+A validação de e-mail é passiva: consulta DNS/MX, mas não realiza tentativa SMTP. Gmail, Hotmail e
+outros provedores gratuitos continuam válidos quando o endereço atende aos demais critérios.
+
+## Aprendizado comercial e deduplicação
+
+O MestreLead pode registrar resultados em `POST /api/intelligence/feedback`. Resposta positiva,
+reunião, oportunidade e venda aquecem o perfil; bounce, descadastro, contato errado e resposta
+negativa geram penalidade temporária. A escrita exige `X-API-Key` mesmo quando as rotas de leitura
+estão públicas.
+
+Empresas são agrupadas pelo domínio corporativo ou pela raiz do CNPJ. E-mails gratuitos nunca são
+usados para unir empresas diferentes. Uma empresa principal é escolhida pelo maior score e as
+demais ficam disponíveis para revisão, evitando abordagens duplicadas.
+
+Pessoas recebem prioridade explícita: fundador, administrador, executivo, sócio, contato e
+funcionário. Plataformas de comércio e atendimento detectadas passam a ser armazenadas como
+tecnologias estruturadas no perfil.
 
 ## Pontuação
 
@@ -50,3 +69,4 @@ As telas podem consumir:
 
 - `GET /api/intelligence/sources` para disponibilidade e andamento por fonte;
 - `GET /api/intelligence/companies/{cnpj}` para perfil, pessoas, sinais e histórico de consultas.
+- `POST /api/intelligence/feedback` para devolver resultados do comercial ao score.

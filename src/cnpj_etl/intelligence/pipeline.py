@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 import hashlib
 import logging
 import time
@@ -33,6 +34,7 @@ def run_intelligence(conn, settings: IntelligenceSettings | None = None, *, forc
             per_source[source_code] = stats
             for key in totals:
                 totals[key] += stats.get(key, 0)
+        refresh_company_groups(conn)
         totals["sources"] = per_source
         return totals
     finally:
@@ -113,6 +115,7 @@ def _pending_companies(conn, source_code: str, limit: int, *, force: bool) -> li
                d.lead_score AS digital_lead_score, d.confidence_score AS digital_confidence_score,
                d.commerce_maturity, d.presence_maturity, d.has_chat, d.has_contact_form,
                d.has_checkout, d.has_product_page, d.whatsapp_valid,
+               d.plataforma, d.plataformas_detectadas, d.chat_provider, d.email_tipo,
                d.google_place_id, d.google_places_checked_at, d.google_rating,
                d.google_rating_count, d.google_maps_url
         FROM cnpj.v_prospect_candidates v
@@ -164,19 +167,22 @@ def _persist_result(conn, cnpj: str, result: SourceResult) -> None:
         (cnpj, result.source_code),
     )
     for person in result.people:
+        priority_score, priority_reason = _person_priority(person)
         conn.execute(
             """
             INSERT INTO intelligence.company_people
               (cnpj,full_name,role_title,relationship_type,linkedin_url,business_email,
-               business_phone,is_decision_maker,confidence,source_code,source_url,raw_data,active)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,true)
+               business_phone,is_decision_maker,confidence,source_code,source_url,raw_data,active,
+               priority_score,priority_reason)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,true,%s,%s)
             ON CONFLICT (cnpj,source_code,lower(full_name),lower(COALESCE(role_title,'')))
             DO UPDATE SET linkedin_url=EXCLUDED.linkedin_url,
               business_email=EXCLUDED.business_email,business_phone=EXCLUDED.business_phone,
               relationship_type=EXCLUDED.relationship_type,
               is_decision_maker=EXCLUDED.is_decision_maker,confidence=EXCLUDED.confidence,
               source_url=EXCLUDED.source_url,source_observed_at=now(),raw_data=EXCLUDED.raw_data,
-              active=true,updated_at=now()
+              active=true,priority_score=EXCLUDED.priority_score,
+              priority_reason=EXCLUDED.priority_reason,updated_at=now()
             """,
             (
                 cnpj,
@@ -191,6 +197,8 @@ def _persist_result(conn, cnpj: str, result: SourceResult) -> None:
                 result.source_code,
                 person.source_url,
                 Jsonb(person.raw_data),
+                priority_score,
+                priority_reason,
             ),
         )
     conn.execute(
@@ -231,6 +239,10 @@ def _persist_result(conn, cnpj: str, result: SourceResult) -> None:
         """,
         (result.status, records, ttl, Jsonb(result.metadata), cnpj, result.source_code),
     )
+    if result.source_code == "email_quality":
+        _persist_email_verification(conn, cnpj, result.metadata.get("verification") or {}, ttl)
+    if result.source_code == "website":
+        _persist_technologies(conn, cnpj, result.metadata.get("technologies") or [], result)
 
 
 def refresh_profile(conn, cnpj: str) -> dict:
@@ -251,14 +263,21 @@ def refresh_profile(conn, cnpj: str) -> dict:
         )
         states = list(cur.fetchall())
     profile = calculate_profile(signals, people, states)
+    feedback = _feedback_summary(conn, cnpj)
+    profile.update(
+        commercial_temperature=feedback["temperature"],
+        last_commercial_event_at=feedback["last_event_at"],
+        feedback_events_count=feedback["count"],
+    )
     conn.execute(
         """
         INSERT INTO intelligence.company_profiles
           (cnpj,fit_score,capacity_score,intent_score,pain_score,data_confidence_score,
            profile_score,profile_quality,estimated_capacity_band,intent_last_seen_at,
            decision_makers_count,signals_count,sources_success,sources_pending,summary,reasons,
-           calculated_at,updated_at)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),now())
+           calculated_at,updated_at,commercial_temperature,last_commercial_event_at,
+           feedback_events_count)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),now(),%s,%s,%s)
         ON CONFLICT (cnpj) DO UPDATE SET
           fit_score=EXCLUDED.fit_score,capacity_score=EXCLUDED.capacity_score,
           intent_score=EXCLUDED.intent_score,pain_score=EXCLUDED.pain_score,
@@ -269,7 +288,10 @@ def refresh_profile(conn, cnpj: str) -> dict:
           decision_makers_count=EXCLUDED.decision_makers_count,
           signals_count=EXCLUDED.signals_count,sources_success=EXCLUDED.sources_success,
           sources_pending=EXCLUDED.sources_pending,summary=EXCLUDED.summary,
-          reasons=EXCLUDED.reasons,calculated_at=now(),updated_at=now()
+          reasons=EXCLUDED.reasons,calculated_at=now(),updated_at=now(),
+          commercial_temperature=EXCLUDED.commercial_temperature,
+          last_commercial_event_at=EXCLUDED.last_commercial_event_at,
+          feedback_events_count=EXCLUDED.feedback_events_count
         """,
         (
             cnpj,
@@ -288,6 +310,9 @@ def refresh_profile(conn, cnpj: str) -> dict:
             profile["sources_pending"],
             profile["summary"],
             profile["reasons"],
+            feedback["temperature"],
+            feedback["last_event_at"],
+            feedback["count"],
         ),
     )
     return profile
@@ -317,7 +342,7 @@ def get_company_profile(conn, cnpj: str) -> dict | None:
         if not company:
             return None
         cur.execute(
-            "SELECT * FROM intelligence.company_people WHERE cnpj=%s AND active=true ORDER BY is_decision_maker DESC,confidence DESC,full_name",
+            "SELECT * FROM intelligence.company_people WHERE cnpj=%s AND active=true ORDER BY priority_score DESC,confidence DESC,full_name",
             (cnpj,),
         )
         people = list(cur.fetchall())
@@ -331,7 +356,223 @@ def get_company_profile(conn, cnpj: str) -> dict | None:
             (cnpj,),
         )
         sources = list(cur.fetchall())
-    return {"company": company, "people": people, "signals": signals, "sources": sources}
+        cur.execute(
+            "SELECT * FROM intelligence.company_technologies WHERE cnpj=%s AND active=true ORDER BY category,confidence DESC,technology",
+            (cnpj,),
+        )
+        technologies = list(cur.fetchall())
+        cur.execute(
+            "SELECT * FROM intelligence.commercial_feedback WHERE cnpj=%s ORDER BY occurred_at DESC LIMIT 100",
+            (cnpj,),
+        )
+        feedback = list(cur.fetchall())
+        cur.execute(
+            "SELECT * FROM intelligence.company_group_members WHERE cnpj=%s",
+            (cnpj,),
+        )
+        group = cur.fetchone()
+    return {
+        "company": company,
+        "people": people,
+        "signals": signals,
+        "sources": sources,
+        "technologies": technologies,
+        "feedback": feedback,
+        "group": group,
+    }
+
+
+def record_feedback(conn, payload: dict) -> dict:
+    row = conn.execute(
+        """
+        INSERT INTO intelligence.commercial_feedback
+          (cnpj,person_id,outcome,channel,campaign_id,source,external_id,notes,metadata,occurred_at)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,COALESCE(%s,now()))
+        ON CONFLICT (source,external_id) WHERE external_id IS NOT NULL DO UPDATE SET
+          outcome=EXCLUDED.outcome,channel=EXCLUDED.channel,campaign_id=EXCLUDED.campaign_id,
+          notes=EXCLUDED.notes,metadata=EXCLUDED.metadata,occurred_at=EXCLUDED.occurred_at
+        RETURNING id,occurred_at
+        """,
+        (
+            payload["cnpj"],
+            payload.get("person_id"),
+            payload["outcome"],
+            payload.get("channel"),
+            payload.get("campaign_id"),
+            payload.get("source") or "mestrelead",
+            payload.get("external_id"),
+            payload.get("notes"),
+            Jsonb(payload.get("metadata") or {}),
+            payload.get("occurred_at"),
+        ),
+    ).fetchone()
+    _sync_feedback_signals(conn, payload["cnpj"])
+    profile = refresh_profile(conn, payload["cnpj"])
+    conn.commit()
+    return {"id": row[0], "occurred_at": row[1], "profile": profile}
+
+
+def refresh_company_groups(conn) -> int:
+    conn.execute("DELETE FROM intelligence.company_group_members")
+    conn.execute("DELETE FROM intelligence.company_groups")
+    conn.execute(
+        """
+        WITH candidates AS (
+          SELECT v.cnpj,v.cnpj_basico,d.email_dominio,d.email_tipo,
+            COALESCE(d.lead_score,0) AS lead_score,
+            CASE
+              WHEN d.email_tipo='corporativo' AND d.email_dominio IS NOT NULL
+                THEN 'domain:' || lower(d.email_dominio)
+              ELSE 'legal:' || v.cnpj_basico
+            END AS group_key
+          FROM cnpj.v_prospect_candidates v
+          LEFT JOIN cnpj.digital_presenca d ON d.cnpj=v.cnpj
+        ), ranked AS (
+          SELECT *,row_number() OVER (PARTITION BY group_key ORDER BY lead_score DESC,cnpj) AS rn,
+            count(*) OVER (PARTITION BY group_key) AS members_count
+          FROM candidates
+        )
+        INSERT INTO intelligence.company_groups
+          (group_key,root_domain,cnpj_basico,primary_cnpj,members_count)
+        SELECT group_key,
+          max(email_dominio) FILTER (WHERE email_tipo='corporativo'),
+          max(cnpj_basico) FILTER (WHERE group_key LIKE 'legal:%'),
+          max(cnpj) FILTER (WHERE rn=1),max(members_count)
+        FROM ranked GROUP BY group_key
+        """
+    )
+    result = conn.execute(
+        """
+        WITH candidates AS (
+          SELECT v.cnpj,
+            CASE
+              WHEN d.email_tipo='corporativo' AND d.email_dominio IS NOT NULL
+                THEN 'domain:' || lower(d.email_dominio)
+              ELSE 'legal:' || v.cnpj_basico
+            END AS group_key
+          FROM cnpj.v_prospect_candidates v
+          LEFT JOIN cnpj.digital_presenca d ON d.cnpj=v.cnpj
+        )
+        INSERT INTO intelligence.company_group_members
+          (cnpj,group_key,is_primary,confidence,reason)
+        SELECT c.cnpj,g.group_key,c.cnpj=g.primary_cnpj,
+          CASE WHEN g.root_domain IS NOT NULL THEN 90 ELSE 100 END,
+          CASE WHEN g.root_domain IS NOT NULL THEN 'corporate_domain' ELSE 'cnpj_basico' END
+        FROM intelligence.company_groups g
+        JOIN candidates c ON c.group_key=g.group_key
+        """
+    )
+    conn.commit()
+    return result.rowcount
+
+
+def _persist_email_verification(conn, cnpj: str, item: dict, ttl: int) -> None:
+    if not item.get("email"):
+        return
+    conn.execute(
+        """
+        INSERT INTO intelligence.email_verifications
+          (cnpj,email,domain,syntax_valid,mx_valid,mx_hosts,disposable,email_role,
+           deliverability_status,risk_score,reason_codes,checked_at,expires_at,last_error)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),now()+(%s||' days')::interval,%s)
+        ON CONFLICT (cnpj) DO UPDATE SET email=EXCLUDED.email,domain=EXCLUDED.domain,
+          syntax_valid=EXCLUDED.syntax_valid,mx_valid=EXCLUDED.mx_valid,
+          mx_hosts=EXCLUDED.mx_hosts,disposable=EXCLUDED.disposable,
+          email_role=EXCLUDED.email_role,deliverability_status=EXCLUDED.deliverability_status,
+          risk_score=EXCLUDED.risk_score,reason_codes=EXCLUDED.reason_codes,
+          checked_at=now(),expires_at=EXCLUDED.expires_at,last_error=EXCLUDED.last_error,updated_at=now()
+        """,
+        (
+            cnpj,item["email"],item.get("domain"),item["syntax_valid"],item.get("mx_valid"),
+            item.get("mx_hosts") or [],item.get("disposable",False),item.get("email_role"),
+            item["deliverability_status"],item.get("risk_score",0),item.get("reason_codes") or [],
+            ttl,item.get("error"),
+        ),
+    )
+
+
+def _persist_technologies(conn, cnpj: str, technologies: list[dict], result: SourceResult) -> None:
+    conn.execute(
+        "UPDATE intelligence.company_technologies SET active=false,updated_at=now() WHERE cnpj=%s AND source_code=%s",
+        (cnpj, result.source_code),
+    )
+    for item in technologies:
+        conn.execute(
+            """
+            INSERT INTO intelligence.company_technologies
+              (cnpj,technology,category,confidence,source_code,source_url,active,raw_data)
+            VALUES (%s,%s,%s,%s,%s,%s,true,%s)
+            ON CONFLICT (cnpj,technology,source_code) DO UPDATE SET
+              category=EXCLUDED.category,confidence=EXCLUDED.confidence,
+              source_url=EXCLUDED.source_url,observed_at=now(),active=true,
+              raw_data=EXCLUDED.raw_data,updated_at=now()
+            """,
+            (cnpj,item["name"],item["category"],item["confidence"],result.source_code,
+             item.get("source_url"),Jsonb(item.get("raw_data") or {})),
+        )
+
+
+def _person_priority(person) -> tuple[int, str]:
+    relationship = person.relationship_type
+    base = {
+        "founder": 100,
+        "administrator": 95,
+        "executive": 90,
+        "partner": 85,
+        "contact": 55,
+        "employee": 40,
+    }.get(relationship, 30)
+    if person.is_decision_maker:
+        base = max(base, 90)
+    return min(100, base), f"relationship:{relationship}"
+
+
+def _feedback_summary(conn, cnpj: str) -> dict:
+    row = conn.execute(
+        """
+        SELECT count(*),max(occurred_at),
+          bool_or(outcome IN ('meeting_scheduled','opportunity_created','won')),
+          bool_or(outcome IN ('replied_positive','opened','clicked')),
+          bool_or(outcome IN ('bounced','unsubscribed','wrong_contact','replied_negative'))
+        FROM intelligence.commercial_feedback WHERE cnpj=%s
+        """,
+        (cnpj,),
+    ).fetchone()
+    temperature = "hot" if row[2] else "warm" if row[3] else "cold" if row[4] else "uncontacted"
+    return {"count": row[0], "last_event_at": row[1], "temperature": temperature}
+
+
+def _sync_feedback_signals(conn, cnpj: str) -> None:
+    conn.execute(
+        "DELETE FROM intelligence.company_signals WHERE cnpj=%s AND source_code='commercial_feedback'",
+        (cnpj,),
+    )
+    rows = conn.execute(
+        "SELECT outcome,count(*),max(occurred_at) FROM intelligence.commercial_feedback WHERE cnpj=%s GROUP BY outcome",
+        (cnpj,),
+    ).fetchall()
+    weights = {
+        "opened": ("intent", 2), "clicked": ("intent", 4),
+        "replied_positive": ("intent", 10), "meeting_scheduled": ("intent", 15),
+        "opportunity_created": ("intent", 20), "won": ("intent", 25),
+        "replied_negative": ("risk", 8), "wrong_contact": ("risk", 10),
+        "bounced": ("risk", 20), "unsubscribed": ("risk", 25), "lost": ("risk", 10),
+    }
+    for outcome, count, observed_at in rows:
+        if outcome not in weights:
+            continue
+        category, score = weights[outcome]
+        conn.execute(
+            """
+            INSERT INTO intelligence.company_signals
+              (cnpj,source_code,signal_type,category,title,score,confidence,observed_at,
+               expires_at,fingerprint,raw_data)
+            VALUES (%s,'commercial_feedback',%s,%s,%s,%s,100,%s,%s,%s,%s)
+            """,
+            (cnpj,outcome,category,f"Feedback comercial: {outcome}",min(25,score+max(0,count-1)),
+             observed_at,observed_at + timedelta(days=180),
+             _fingerprint('commercial_feedback',outcome),Jsonb({"count": count})),
+        )
 
 
 def _fingerprint(*parts: str | None) -> str:

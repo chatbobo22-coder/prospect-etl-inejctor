@@ -16,6 +16,7 @@ import requests
 from ..enrichment.models import EnrichSettings
 from ..enrichment.website import http_session, safe_fetch
 from .models import IntelligenceSettings, Person, Signal, SourceResult
+from .email_quality import verify_email
 
 ADMIN_QUALIFICATIONS = {"05", "10", "16", "17", "49"}
 DECISION_WORDS = re.compile(
@@ -97,6 +98,41 @@ def collect_receita(conn, company: dict, _: IntelligenceSettings) -> SourceResul
     return SourceResult("receita", people=people, signals=signals, metadata={"partners": len(people)})
 
 
+def collect_email_quality(_: object, company: dict, settings: IntelligenceSettings) -> SourceResult:
+    verification = verify_email(company.get("email"), timeout=min(settings.request_timeout, 8))
+    status = verification["deliverability_status"]
+    if status == "invalid":
+        signal = Signal(
+            "invalid_email",
+            "risk",
+            "E-mail inadequado para outreach",
+            25,
+            100,
+            description=", ".join(verification["reason_codes"]),
+            raw_data={"status": status, "risk_score": verification["risk_score"]},
+        )
+    elif status == "valid":
+        signal = Signal(
+            "deliverable_email",
+            "confidence",
+            "Domínio de e-mail com entrega tecnicamente válida",
+            4,
+            95,
+            raw_data={"status": status, "email_type": verification["email_type"]},
+        )
+    else:
+        signal = Signal(
+            "email_risk",
+            "risk",
+            "E-mail requer cautela",
+            8,
+            80,
+            description=", ".join(verification["reason_codes"]),
+            raw_data={"status": status, "risk_score": verification["risk_score"]},
+        )
+    return SourceResult("email_quality", signals=[signal], metadata={"verification": verification})
+
+
 def collect_website(conn, company: dict, settings: IntelligenceSettings) -> SourceResult:
     url = company.get("site_final_url") or company.get("site_url")
     if not url or not company.get("site_valid"):
@@ -110,6 +146,20 @@ def collect_website(conn, company: dict, settings: IntelligenceSettings) -> Sour
     seen: set[str] = set()
     people: list[Person] = []
     signals: list[Signal] = [Signal("valid_website", "presence", "Site institucional validado", 3, 95, source_url=url)]
+    technologies = []
+    for platform in company.get("plataformas_detectadas") or []:
+        technologies.append(
+            {"name": platform, "category": "commerce_platform", "confidence": 85, "source_url": url}
+        )
+    if company.get("chat_provider"):
+        technologies.append(
+            {
+                "name": company["chat_provider"],
+                "category": "customer_service",
+                "confidence": 85,
+                "source_url": url,
+            }
+        )
     digital_lead_score = int(company.get("digital_lead_score") or 0)
     if digital_lead_score >= 60:
         signals.append(
@@ -174,7 +224,11 @@ def collect_website(conn, company: dict, settings: IntelligenceSettings) -> Sour
         "website",
         people=people,
         signals=signals,
-        metadata={"pages_checked": len(seen), "public_people": len(people)},
+        metadata={
+            "pages_checked": len(seen),
+            "public_people": len(people),
+            "technologies": technologies,
+        },
     )
 
 
@@ -357,6 +411,7 @@ def collect_configured_provider(_: object, company: dict, settings: Intelligence
 
 COLLECTORS = {
     "receita": collect_receita,
+    "email_quality": collect_email_quality,
     "website": collect_website,
     "rdap": collect_rdap,
     "gdelt": collect_gdelt,

@@ -18,7 +18,7 @@ class IntelligenceSettings:
     sources: tuple[str, ...] = field(
         default_factory=lambda: _csv_env(
             "INTELLIGENCE_SOURCES",
-            "receita,website,rdap,cvm,gdelt,pncp,inpi,google_places,pagespeed,meta_ads,google_ads,people_provider",
+            "receita,email_quality,website,rdap,cvm,gdelt,pncp,inpi,google_places,pagespeed,meta_ads,google_ads,people_provider",
         )
     )
     request_timeout: int = int(os.getenv("INTELLIGENCE_REQUEST_TIMEOUT", "15"))

@@ -159,7 +159,8 @@ CREATE TABLE IF NOT EXISTS intelligence.source_runs (
   error_message text
 );
 
-CREATE OR REPLACE VIEW intelligence.v_commercial_profiles AS
+DROP VIEW IF EXISTS intelligence.v_commercial_profiles;
+CREATE VIEW intelligence.v_commercial_profiles AS
 SELECT
   v.cnpj,
   v.cnpj_basico,

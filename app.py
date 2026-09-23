@@ -3,6 +3,9 @@ import os
 from pathlib import Path
 import re
 import sys
+from datetime import datetime
+import hmac
+from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Security
 from fastapi.security import APIKeyHeader
@@ -14,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 from cnpj_etl.config import Settings
 from cnpj_etl.database import Database
 from cnpj_etl.intelligence import get_company_profile, list_sources
+from cnpj_etl.intelligence.pipeline import record_feedback
 
 log = logging.getLogger(__name__)
 app = FastAPI(title="CNPJ ETL", version="2.0.0")
@@ -40,7 +44,7 @@ class InjectorConfig(BaseModel):
     force_enrich: bool = False
     enrich_batch_size: int = Field(default=500, ge=1, le=5000)
     intelligence_sources: str = (
-        "receita,website,rdap,cvm,gdelt,pncp,inpi,google_places,pagespeed,"
+        "receita,email_quality,website,rdap,cvm,gdelt,pncp,inpi,google_places,pagespeed,"
         "meta_ads,google_ads,people_provider"
     )
     intelligence_batch_size: int = Field(default=100, ge=1, le=1000)
@@ -65,33 +69,9 @@ class InjectorConfig(BaseModel):
     @classmethod
     def valid_ufs(cls, value: str) -> str:
         allowed = {
-            "AC",
-            "AL",
-            "AP",
-            "AM",
-            "BA",
-            "CE",
-            "DF",
-            "ES",
-            "GO",
-            "MA",
-            "MT",
-            "MS",
-            "MG",
-            "PA",
-            "PB",
-            "PR",
-            "PE",
-            "PI",
-            "RJ",
-            "RN",
-            "RS",
-            "RO",
-            "RR",
-            "SC",
-            "SP",
-            "SE",
-            "TO",
+            "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT",
+            "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO",
+            "RR", "SC", "SP", "SE", "TO",
         }
         values = [item.strip().upper() for item in value.split(",") if item.strip()]
         if any(item not in allowed for item in values):
@@ -99,11 +79,53 @@ class InjectorConfig(BaseModel):
         return ",".join(dict.fromkeys(values))
 
 
+class CommercialFeedback(BaseModel):
+    cnpj: str
+    outcome: Literal[
+        "attempted",
+        "delivered",
+        "opened",
+        "clicked",
+        "replied_positive",
+        "replied_negative",
+        "meeting_scheduled",
+        "opportunity_created",
+        "won",
+        "lost",
+        "bounced",
+        "unsubscribed",
+        "wrong_contact",
+    ]
+    person_id: int | None = None
+    channel: str | None = None
+    campaign_id: str | None = None
+    source: str = "mestrelead"
+    external_id: str | None = None
+    notes: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    occurred_at: datetime | None = None
+
+    @field_validator("cnpj")
+    @classmethod
+    def valid_cnpj(cls, value: str) -> str:
+        digits = re.sub(r"\D", "", value)
+        if len(digits) != 14:
+            raise ValueError("CNPJ inválido")
+        return digits
+
 def _require_api_key(api_key: str | None = Security(_api_key_header)) -> None:
     if os.getenv("API_REQUIRE_AUTH", "false").lower() not in {"1", "true", "yes"}:
         return
     expected = os.getenv("API_KEY", "").strip()
     if not expected or api_key != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def _require_write_api_key(api_key: str | None = Security(_api_key_header)) -> None:
+    expected = os.getenv("API_KEY", "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="API_KEY não configurada")
+    if not api_key or not hmac.compare_digest(api_key, expected):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -138,7 +160,15 @@ def root():
         "service": "cnpj-etl",
         "status": "ok",
         "docs": "/docs",
-        "endpoints": ["/api/health", "/api/db", "/api/runs", "/api/enrichment/stats"],
+        "endpoints": [
+            "/api/health",
+            "/api/db",
+            "/api/runs",
+            "/api/enrichment/stats",
+            "/api/intelligence/sources",
+            "/api/intelligence/companies/{cnpj}",
+            "/api/intelligence/feedback",
+        ],
     }
 
 
@@ -177,7 +207,7 @@ def injector_config():
             "enrich_batch_size": int(os.getenv("ENRICH_BATCH_SIZE", "500")),
             "intelligence_sources": os.getenv(
                 "INTELLIGENCE_SOURCES",
-                "receita,website,rdap,cvm,gdelt,pncp,inpi,google_places,pagespeed,meta_ads,google_ads,people_provider",
+                "receita,email_quality,website,rdap,cvm,gdelt,pncp,inpi,google_places,pagespeed,meta_ads,google_ads,people_provider",
             ),
             "intelligence_batch_size": int(os.getenv("INTELLIGENCE_BATCH_SIZE", "100")),
         }
@@ -378,3 +408,15 @@ def intelligence_company(cnpj: str):
     if not profile:
         raise HTTPException(status_code=404, detail="Empresa não encontrada")
     return profile
+
+
+@app.post("/api/intelligence/feedback", dependencies=[Depends(_require_write_api_key)])
+def intelligence_feedback(payload: CommercialFeedback):
+    try:
+        db = Database(Settings().database_url)
+        with db.connect() as conn:
+            result = record_feedback(conn, payload.model_dump())
+    except Exception:
+        log.exception("Commercial feedback failed")
+        raise _service_error() from None
+    return result
