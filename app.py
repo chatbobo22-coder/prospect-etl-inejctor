@@ -154,6 +154,173 @@ def _github_repo() -> str:
     return os.getenv("GITHUB_REPOSITORY", "chatbobo22-coder/prospect-etl-inejctor")
 
 
+def _workflow_progress(status: str, steps: list[dict[str, Any]]) -> int:
+    if status == "completed":
+        return 100
+    if not steps:
+        return 2 if status in {"queued", "waiting", "requested", "pending"} else 5
+    completed = sum(step.get("status") == "completed" for step in steps)
+    active = any(step.get("status") == "in_progress" for step in steps)
+    progress = ((completed + (0.25 if active else 0)) / len(steps)) * 100
+    return max(1, min(99, round(progress)))
+
+
+def _sanitize_log_lines(raw: str, limit: int = 160) -> list[str]:
+    cleaned: list[str] = []
+    ansi = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+    secret = re.compile(
+        r"(?i)(password|secret|token|api[_-]?key|database_url)\s*[=:]\s*\S+"
+    )
+    database_url = re.compile(r"(?i)postgres(?:ql)?://\S+")
+    for line in raw.splitlines():
+        line = ansi.sub("", line).strip()
+        line = database_url.sub("postgresql://***", line)
+        line = secret.sub(lambda match: f"{match.group(1)}=***", line)
+        if line:
+            cleaned.append(line[-1200:])
+    return cleaned[-limit:]
+
+
+def _github_run(run_id: int) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
+    base = f"https://api.github.com/repos/{_github_repo()}/actions"
+    run_response = requests.get(
+        f"{base}/runs/{run_id}", headers=_github_headers(), timeout=20
+    )
+    if run_response.status_code == 404:
+        raise HTTPException(status_code=404, detail="Execução não encontrada")
+    if not run_response.ok:
+        raise HTTPException(status_code=502, detail="Não foi possível consultar a execução")
+    jobs_response = requests.get(
+        f"{base}/runs/{run_id}/jobs",
+        headers=_github_headers(),
+        params={"per_page": 20},
+        timeout=20,
+    )
+    if not jobs_response.ok:
+        raise HTTPException(status_code=502, detail="Não foi possível consultar as etapas")
+    jobs = jobs_response.json().get("jobs", [])
+    log_lines: list[str] = []
+    active_job = next(
+        (job for job in jobs if job.get("status") == "in_progress"),
+        jobs[-1] if jobs else None,
+    )
+    if active_job and os.getenv("GITHUB_WORKFLOW_TOKEN", "").strip():
+        try:
+            log_response = requests.get(
+                f"{base}/jobs/{active_job['id']}/logs",
+                headers=_github_headers(require_token=True),
+                timeout=20,
+            )
+            if log_response.ok:
+                log_lines = _sanitize_log_lines(log_response.text)
+        except requests.RequestException:
+            log.warning("GitHub job logs unavailable for run %s", run_id)
+    return run_response.json(), jobs, log_lines
+
+
+def _database_telemetry(workflow_run_id: int) -> dict[str, Any]:
+    db = Database(Settings().database_url)
+    with db.connect() as conn:
+        has_workflow_column = conn.execute(
+            """
+            SELECT EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_schema='etl' AND table_name='runs'
+                AND column_name='workflow_run_id'
+            )
+            """
+        ).fetchone()[0]
+        if has_workflow_column:
+            etl_run = conn.execute(
+                """
+                SELECT id,competence,status,started_at,finished_at,files_total,
+                       files_processed,rows_processed,error_message,cancel_requested_at
+                FROM etl.runs WHERE workflow_run_id=%s ORDER BY id DESC LIMIT 1
+                """,
+                (workflow_run_id,),
+            ).fetchone()
+        else:
+            etl_run = None
+        database_bytes = conn.execute(
+            "SELECT pg_database_size(current_database())"
+        ).fetchone()[0]
+        schema_rows = conn.execute(
+            """
+            SELECT schemaname,COALESCE(sum(pg_total_relation_size(relid)),0)::bigint
+            FROM pg_catalog.pg_statio_user_tables
+            WHERE schemaname IN ('cnpj','etl','intelligence')
+            GROUP BY schemaname ORDER BY 2 DESC
+            """
+        ).fetchall()
+        counts = conn.execute(
+            """
+            SELECT
+              COALESCE((SELECT n_live_tup FROM pg_stat_user_tables
+                WHERE schemaname='cnpj' AND relname='estabelecimentos'),0),
+              COALESCE((SELECT n_live_tup FROM pg_stat_user_tables
+                WHERE schemaname='cnpj' AND relname='digital_presenca'),0),
+              COALESCE((SELECT c.reltuples::bigint FROM pg_class c
+                JOIN pg_namespace n ON n.oid=c.relnamespace
+                WHERE n.nspname='cnpj'
+                  AND c.relname='idx_prospect_outreach_quality'),0)
+            """
+        ).fetchone()
+        files = []
+        if etl_run:
+            file_rows = conn.execute(
+                """
+                SELECT file_name,file_type,status,rows_processed,source_size,
+                       downloaded_at,processed_at,error_message
+                FROM etl.files WHERE competence=%s
+                ORDER BY COALESCE(processed_at,downloaded_at) DESC NULLS LAST,file_name
+                LIMIT 20
+                """,
+                (etl_run[1],),
+            ).fetchall()
+            files = [
+                {
+                    "name": row[0],
+                    "type": row[1],
+                    "status": row[2],
+                    "rows": row[3],
+                    "bytes": row[4],
+                    "downloaded_at": row[5].isoformat() if row[5] else None,
+                    "processed_at": row[6].isoformat() if row[6] else None,
+                    "error": row[7],
+                }
+                for row in file_rows
+            ]
+    storage_limit_mb = int(os.getenv("DATABASE_STORAGE_LIMIT_MB", "0") or 0)
+    run_data = None
+    if etl_run:
+        run_data = {
+            "id": etl_run[0],
+            "competence": etl_run[1],
+            "status": etl_run[2],
+            "started_at": etl_run[3].isoformat() if etl_run[3] else None,
+            "finished_at": etl_run[4].isoformat() if etl_run[4] else None,
+            "files_total": etl_run[5],
+            "files_processed": etl_run[6],
+            "rows_processed": etl_run[7],
+            "error": etl_run[8],
+            "cancel_requested_at": etl_run[9].isoformat() if etl_run[9] else None,
+        }
+    return {
+        "etl_run": run_data,
+        "files": files,
+        "storage": {
+            "database_bytes": database_bytes,
+            "limit_bytes": storage_limit_mb * 1024 * 1024 if storage_limit_mb else None,
+            "schemas": {row[0]: row[1] for row in schema_rows},
+        },
+        "counts": {
+            "companies": counts[0],
+            "enriched": counts[1],
+            "qualified": counts[2],
+        },
+    }
+
+
 @app.get("/")
 def root():
     return {
@@ -164,6 +331,9 @@ def root():
             "/api/health",
             "/api/db",
             "/api/runs",
+            "/api/workflow-runs",
+            "/api/workflow-runs/{run_id}",
+            "/api/workflow-runs/{run_id}/cancel",
             "/api/enrichment/stats",
             "/api/intelligence/sources",
             "/api/intelligence/companies/{cnpj}",
@@ -278,6 +448,106 @@ def workflow_runs(limit: int = Query(default=10, ge=1, le=50)):
             for item in data.get("workflow_runs", [])
         ]
     }
+
+
+@app.get(
+    "/api/workflow-runs/{run_id}",
+    dependencies=[Depends(_require_api_key)],
+)
+def workflow_run_detail(run_id: int):
+    run, jobs, log_lines = _github_run(run_id)
+    steps = [
+        {
+            "number": step.get("number"),
+            "name": step.get("name"),
+            "status": step.get("status"),
+            "conclusion": step.get("conclusion"),
+            "started_at": step.get("started_at"),
+            "completed_at": step.get("completed_at"),
+        }
+        for job in jobs
+        for step in job.get("steps", [])
+    ]
+    try:
+        telemetry = _database_telemetry(run_id)
+    except Exception:
+        log.exception("Database telemetry failed for workflow %s", run_id)
+        telemetry = {
+            "etl_run": None,
+            "files": [],
+            "storage": {"database_bytes": 0, "limit_bytes": None, "schemas": {}},
+            "counts": {"companies": 0, "enriched": 0, "qualified": 0},
+            "warning": "Telemetria do banco temporariamente indisponível",
+        }
+    database_logs = []
+    for item in reversed(telemetry.get("files", [])):
+        timestamp = item.get("processed_at") or item.get("downloaded_at") or ""
+        message = (
+            f"{timestamp} [{item['status'].upper()}] {item['name']} — "
+            f"{item['rows']:,} linhas"
+        )
+        database_logs.append(message)
+    if not log_lines:
+        log_lines = [
+            f"[{step['status'].upper()}] {step['name']}"
+            for step in steps
+            if step["status"] in {"completed", "in_progress"}
+        ]
+    log_lines = (log_lines + database_logs)[-160:]
+    return {
+        "run": {
+            "id": run["id"],
+            "status": run["status"],
+            "conclusion": run.get("conclusion"),
+            "created_at": run["created_at"],
+            "updated_at": run["updated_at"],
+            "html_url": run["html_url"],
+            "cancel_url": run.get("cancel_url"),
+        },
+        "progress": _workflow_progress(run["status"], steps),
+        "current_step": next(
+            (step["name"] for step in steps if step["status"] == "in_progress"),
+            "Concluído" if run["status"] == "completed" else "Aguardando executor",
+        ),
+        "steps": steps,
+        "logs": log_lines,
+        **telemetry,
+    }
+
+
+@app.post(
+    "/api/workflow-runs/{run_id}/cancel",
+    dependencies=[Depends(_require_write_api_key)],
+    status_code=202,
+)
+def cancel_workflow_run(run_id: int):
+    run, _, _ = _github_run(run_id)
+    if run["status"] == "completed":
+        raise HTTPException(status_code=409, detail="Esta execução já terminou")
+    response = requests.post(
+        f"https://api.github.com/repos/{_github_repo()}/actions/runs/{run_id}/cancel",
+        headers=_github_headers(require_token=True),
+        timeout=20,
+    )
+    if response.status_code not in {202, 409}:
+        log.error("GitHub workflow cancel failed: %s %s", response.status_code, response.text)
+        raise HTTPException(status_code=502, detail="Não foi possível abortar a execução")
+    try:
+        db = Database(Settings().database_url)
+        with db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE etl.runs
+                SET status='cancelled',finished_at=COALESCE(finished_at,now()),
+                    cancel_requested_at=now()
+                WHERE workflow_run_id=%s AND status='running'
+                """,
+                (run_id,),
+            )
+            conn.commit()
+    except Exception:
+        log.exception("Could not mark workflow %s as cancelled", run_id)
+    return {"cancelled": True, "run_id": run_id}
 
 
 @app.get("/api/db", dependencies=[Depends(_require_api_key)])

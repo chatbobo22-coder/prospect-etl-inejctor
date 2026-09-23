@@ -143,9 +143,11 @@ def run(
         if not db.acquire_lock(lock_conn):
             log.warning("Outra execução está ativa; encerrando.")
             return 0
+        workflow_run_id = os.getenv("GITHUB_RUN_ID")
         run_id = lock_conn.execute(
-            "INSERT INTO etl.runs (competence,status,files_total) VALUES (%s,'running',%s) RETURNING id",
-            (competence, len(files)),
+            "INSERT INTO etl.runs (competence,status,files_total,workflow_run_id) "
+            "VALUES (%s,'running',%s,%s) RETURNING id",
+            (competence, len(files), int(workflow_run_id) if workflow_run_id else None),
         ).fetchone()[0]
         lock_conn.commit()
         total = processed = 0
@@ -238,9 +240,13 @@ def run(
                     "WHERE competence=%s AND file_name=%s",
                     (rows, competence, remote.name),
                 )
-                lock_conn.commit()
                 processed += 1
                 total += rows
+                lock_conn.execute(
+                    "UPDATE etl.runs SET files_processed=%s,rows_processed=%s WHERE id=%s",
+                    (processed, total, run_id),
+                )
+                lock_conn.commit()
                 log.info("Concluído %s (%s linhas)", remote.name, rows)
             lock_conn.execute(
                 "UPDATE etl.runs SET status='success',finished_at=now(),"
