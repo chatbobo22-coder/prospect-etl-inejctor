@@ -448,7 +448,7 @@ def _database_telemetry(workflow_run_id: int) -> dict[str, Any]:
         }
         for row in source_rows
     ]
-    core_sources = {"receita", "email_quality", "website", "rdap", "cvm", "gdelt"}
+    core_sources = {"receita", "email_quality", "website", "rdap"}
     core_source_data = [item for item in source_data if item["source"] in core_sources]
     core_processed_checks = sum(
         item["completed"] + item["failed"] + item["running"] for item in core_source_data

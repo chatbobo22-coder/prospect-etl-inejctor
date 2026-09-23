@@ -194,9 +194,12 @@ O enriquecimento digital usa oito rodadas de 500 registros e a inteligência usa
 rodadas de 100, mantendo entrada e avaliação no mesmo teto de 4.000 empresas.
 
 O lote temporário é então verificado nas fontes Receita, qualidade técnica do e-mail,
-site institucional, RDAP, CVM e GDELT. Um lead só entra em
-`cnpj.prospectos_qualificados` se passar simultaneamente pelo score digital e pelo perfil
-de inteligência pública. A decisão compacta fica em `etl.candidate_decisions`; dados
+site institucional, RDAP, CVM e GDELT. Receita, qualidade do e-mail, site e domínio formam
+o núcleo obrigatório. CVM e GDELT acrescentam capacidade e intenção, mas indisponibilidade
+temporária dessas fontes não rejeita nem bloqueia um lead. A cada rodada, os A/B prontos são
+publicados incrementalmente em `outreach.leads`, sem aguardar o lote completo. Um lead só
+entra em `cnpj.prospectos_qualificados` se passar simultaneamente pelo score digital e pelo
+perfil de inteligência pública. A decisão compacta fica em `etl.candidate_decisions`; dados
 brutos e inteligência detalhada de rejeitados são apagados ao final da execução.
 
 Provedores gratuitos, como Gmail e Hotmail, são aceitos quando os demais sinais confirmam

@@ -28,6 +28,9 @@ class IntelligenceSettings:
     delay_seconds: float = float(os.getenv("INTELLIGENCE_DELAY_SECONDS", "0.25"))
     website_max_pages: int = int(os.getenv("INTELLIGENCE_WEBSITE_MAX_PAGES", "3"))
     gdelt_max_records: int = int(os.getenv("GDELT_MAX_RECORDS", "10"))
+    gdelt_timeout_seconds: int = int(os.getenv("GDELT_TIMEOUT_SECONDS", "30"))
+    gdelt_batch_size: int = int(os.getenv("GDELT_BATCH_SIZE", "10"))
+    gdelt_delay_seconds: float = float(os.getenv("GDELT_DELAY_SECONDS", "5.2"))
     pagespeed_api_key: str = os.getenv("PAGESPEED_API_KEY", "").strip()
     provider_api_key: str = os.getenv("INTELLIGENCE_PROVIDER_API_KEY", "").strip()
 

@@ -6,6 +6,7 @@ from datetime import timedelta
 import hashlib
 import logging
 import time
+from collections.abc import Callable
 
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
@@ -18,7 +19,9 @@ log = logging.getLogger(__name__)
 INTELLIGENCE_LOCK = 7_262_603_882
 
 
-def run_intelligence(conn, settings: IntelligenceSettings | None = None, *, force: bool = False) -> dict:
+def run_intelligence(
+    conn, settings: IntelligenceSettings | None = None, *, force: bool = False
+) -> dict:
     settings = settings or IntelligenceSettings()
     if not conn.execute("SELECT pg_try_advisory_lock(%s)", (INTELLIGENCE_LOCK,)).fetchone()[0]:
         return {"locked": 1, "processed": 0}
@@ -43,7 +46,11 @@ def run_intelligence(conn, settings: IntelligenceSettings | None = None, *, forc
 
 
 def run_intelligence_until_empty(
-    conn, settings: IntelligenceSettings | None = None, *, force: bool = False
+    conn,
+    settings: IntelligenceSettings | None = None,
+    *,
+    force: bool = False,
+    after_round: Callable[[int, dict], None] | None = None,
 ) -> dict:
     settings = settings or IntelligenceSettings()
     totals = {"processed": 0, "success": 0, "no_data": 0, "failed": 0, "skipped": 0, "rounds": 0}
@@ -54,6 +61,8 @@ def run_intelligence_until_empty(
             totals[key] += stats.get(key, 0)
         if stats.get("processed", 0) == 0:
             break
+        if after_round:
+            after_round(round_number + 1, stats)
     return totals
 
 
@@ -65,7 +74,12 @@ def _run_source(conn, source_code: str, settings: IntelligenceSettings, *, force
     conn.commit()
     stats = {"processed": 0, "success": 0, "no_data": 0, "failed": 0, "skipped": 0}
     try:
-        companies = _pending_companies(conn, source_code, settings.batch_size, force=force)
+        batch_size = (
+            min(settings.batch_size, settings.gdelt_batch_size)
+            if source_code == "gdelt"
+            else settings.batch_size
+        )
+        companies = _pending_companies(conn, source_code, batch_size, force=force)
         log.info("Inteligência %s: %s empresas", source_code, len(companies))
         for company in companies:
             cnpj = company["cnpj"]
@@ -84,14 +98,25 @@ def _run_source(conn, source_code: str, settings: IntelligenceSettings, *, force
                 stats["processed"] += 1
                 stats["failed"] += 1
                 log.warning("Fonte %s falhou para %s: %s", source_code, cnpj, exc)
-            time.sleep(settings.delay_seconds)
+            delay_seconds = (
+                max(settings.delay_seconds, settings.gdelt_delay_seconds)
+                if source_code == "gdelt"
+                else settings.delay_seconds
+            )
+            time.sleep(delay_seconds)
         conn.execute(
             """
             UPDATE intelligence.source_runs SET finished_at=now(), status='success',
               processed=%s, success=%s, no_data=%s, failed=%s
             WHERE id=%s
             """,
-            (stats["processed"], stats["success"], stats["no_data"] + stats["skipped"], stats["failed"], run_id),
+            (
+                stats["processed"],
+                stats["success"],
+                stats["no_data"] + stats["skipped"],
+                stats["failed"],
+                run_id,
+            ),
         )
         conn.commit()
         return stats
@@ -106,7 +131,11 @@ def _run_source(conn, source_code: str, settings: IntelligenceSettings, *, force
 
 
 def _pending_companies(conn, source_code: str, limit: int, *, force: bool) -> list[dict]:
-    where = "TRUE" if force else "(s.cnpj IS NULL OR s.next_check_at IS NULL OR s.next_check_at <= now())"
+    where = (
+        "TRUE"
+        if force
+        else "(s.cnpj IS NULL OR s.next_check_at IS NULL OR s.next_check_at <= now())"
+    )
     query = f"""
         SELECT v.cnpj, v.cnpj_basico, v.razao_social, v.nome_fantasia,
                v.capital_social, v.porte, v.data_inicio_atividade, v.email,
@@ -206,7 +235,9 @@ def _persist_result(conn, cnpj: str, result: SourceResult) -> None:
         (cnpj, result.source_code),
     )
     for signal in result.signals:
-        fingerprint = _fingerprint(result.source_code, signal.signal_type, signal.title, signal.source_url)
+        fingerprint = _fingerprint(
+            result.source_code, signal.signal_type, signal.title, signal.source_url
+        )
         conn.execute(
             """
             INSERT INTO intelligence.company_signals
@@ -234,10 +265,24 @@ def _persist_result(conn, cnpj: str, result: SourceResult) -> None:
     conn.execute(
         """
         UPDATE intelligence.company_source_state SET status=%s, records_found=%s,
-          next_check_at=now()+(%s || ' days')::interval, last_error=NULL,
+          next_check_at=CASE
+            WHEN %s='skipped' AND (%s)::jsonb->>'reason'='temporarily_unavailable'
+              THEN now()+interval '1 hour'
+            ELSE now()+(%s || ' days')::interval
+          END,
+          last_error=NULL,
           metadata=%s,updated_at=now() WHERE cnpj=%s AND source_code=%s
         """,
-        (result.status, records, ttl, Jsonb(result.metadata), cnpj, result.source_code),
+        (
+            result.status,
+            records,
+            result.status,
+            Jsonb(result.metadata),
+            ttl,
+            Jsonb(result.metadata),
+            cnpj,
+            result.source_code,
+        ),
     )
     if result.source_code == "email_quality":
         _persist_email_verification(conn, cnpj, result.metadata.get("verification") or {}, ttl)
@@ -483,10 +528,19 @@ def _persist_email_verification(conn, cnpj: str, item: dict, ttl: int) -> None:
           checked_at=now(),expires_at=EXCLUDED.expires_at,last_error=EXCLUDED.last_error,updated_at=now()
         """,
         (
-            cnpj,item["email"],item.get("domain"),item["syntax_valid"],item.get("mx_valid"),
-            item.get("mx_hosts") or [],item.get("disposable",False),item.get("email_role"),
-            item["deliverability_status"],item.get("risk_score",0),item.get("reason_codes") or [],
-            ttl,item.get("error"),
+            cnpj,
+            item["email"],
+            item.get("domain"),
+            item["syntax_valid"],
+            item.get("mx_valid"),
+            item.get("mx_hosts") or [],
+            item.get("disposable", False),
+            item.get("email_role"),
+            item["deliverability_status"],
+            item.get("risk_score", 0),
+            item.get("reason_codes") or [],
+            ttl,
+            item.get("error"),
         ),
     )
 
@@ -507,8 +561,15 @@ def _persist_technologies(conn, cnpj: str, technologies: list[dict], result: Sou
               source_url=EXCLUDED.source_url,observed_at=now(),active=true,
               raw_data=EXCLUDED.raw_data,updated_at=now()
             """,
-            (cnpj,item["name"],item["category"],item["confidence"],result.source_code,
-             item.get("source_url"),Jsonb(item.get("raw_data") or {})),
+            (
+                cnpj,
+                item["name"],
+                item["category"],
+                item["confidence"],
+                result.source_code,
+                item.get("source_url"),
+                Jsonb(item.get("raw_data") or {}),
+            ),
         )
 
 
@@ -552,11 +613,17 @@ def _sync_feedback_signals(conn, cnpj: str) -> None:
         (cnpj,),
     ).fetchall()
     weights = {
-        "opened": ("intent", 2), "clicked": ("intent", 4),
-        "replied_positive": ("intent", 10), "meeting_scheduled": ("intent", 15),
-        "opportunity_created": ("intent", 20), "won": ("intent", 25),
-        "replied_negative": ("risk", 8), "wrong_contact": ("risk", 10),
-        "bounced": ("risk", 20), "unsubscribed": ("risk", 25), "lost": ("risk", 10),
+        "opened": ("intent", 2),
+        "clicked": ("intent", 4),
+        "replied_positive": ("intent", 10),
+        "meeting_scheduled": ("intent", 15),
+        "opportunity_created": ("intent", 20),
+        "won": ("intent", 25),
+        "replied_negative": ("risk", 8),
+        "wrong_contact": ("risk", 10),
+        "bounced": ("risk", 20),
+        "unsubscribed": ("risk", 25),
+        "lost": ("risk", 10),
     }
     for outcome, count, observed_at in rows:
         if outcome not in weights:
@@ -569,9 +636,17 @@ def _sync_feedback_signals(conn, cnpj: str) -> None:
                expires_at,fingerprint,raw_data)
             VALUES (%s,'commercial_feedback',%s,%s,%s,%s,100,%s,%s,%s,%s)
             """,
-            (cnpj,outcome,category,f"Feedback comercial: {outcome}",min(25,score+max(0,count-1)),
-             observed_at,observed_at + timedelta(days=180),
-             _fingerprint('commercial_feedback',outcome),Jsonb({"count": count})),
+            (
+                cnpj,
+                outcome,
+                category,
+                f"Feedback comercial: {outcome}",
+                min(25, score + max(0, count - 1)),
+                observed_at,
+                observed_at + timedelta(days=180),
+                _fingerprint("commercial_feedback", outcome),
+                Jsonb({"count": count}),
+            ),
         )
 
 

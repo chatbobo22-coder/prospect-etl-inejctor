@@ -16,8 +16,6 @@ CORE_INTELLIGENCE_SOURCES = (
     "email_quality",
     "website",
     "rdap",
-    "cvm",
-    "gdelt",
 )
 
 

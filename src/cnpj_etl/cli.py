@@ -74,6 +74,10 @@ def main():
         "sync-outreach",
         help="Sincroniza leads A/B qualificados com outreach.leads",
     )
+    sub.add_parser(
+        "publish-ready",
+        help="Qualifica candidatos prontos e publica A/B no Outreach",
+    )
     prospect = sub.add_parser(
         "prospect-pipeline",
         help="Enriquece até esvaziar fila e qualifica prospects (pós-ETL)",
@@ -173,20 +177,47 @@ def main():
         with db.connect() as conn:
             synced = sync_qualified_leads(conn)
         logging.info("Sincronização Outreach concluída: %s leads A/B", synced)
+    elif args.command == "publish-ready":
+        db.migrate(sql_dir)
+        with db.connect() as conn:
+            qualify_stats = promote_qualified(conn)
+            synced = sync_qualified_leads(conn)
+        logging.info(
+            "Publicação incremental concluída: qualify=%s outreach=%s",
+            qualify_stats,
+            synced,
+        )
     elif args.command == "prospect-pipeline":
         db.migrate(sql_dir)
         batch_size = args.batch_size or int(os.getenv("ENRICH_BATCH_SIZE", "500"))
         settings_obj = EnrichSettings(batch_size=batch_size)
         with db.connect() as conn:
             enrich_stats = run_enrichment_until_empty(conn, settings_obj, force=args.force_enrich)
-            intelligence_stats = run_intelligence_until_empty(conn)
+
+            def publish_round(round_number: int, round_stats: dict) -> None:
+                qualify_round = promote_qualified(conn)
+                synced_round = sync_qualified_leads(conn)
+                logging.info(
+                    "Publicação incremental rodada=%s intelligence=%s qualify=%s outreach=%s",
+                    round_number,
+                    round_stats,
+                    qualify_round,
+                    synced_round,
+                )
+
+            intelligence_stats = run_intelligence_until_empty(
+                conn,
+                after_round=publish_round,
+            )
             qualify_stats = promote_qualified(conn)
+            synced = sync_qualified_leads(conn)
             retention_stats = prune_evaluated_candidates(conn)
         logging.info(
-            "Pipeline prospect: enrich=%s intelligence=%s qualify=%s retention=%s",
+            "Pipeline prospect: enrich=%s intelligence=%s qualify=%s outreach=%s retention=%s",
             enrich_stats,
             intelligence_stats,
             qualify_stats,
+            synced,
             retention_stats,
         )
     elif args.command == "intelligence-pipeline":

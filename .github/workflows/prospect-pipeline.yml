@@ -166,6 +166,9 @@ jobs:
           echo "STRICT_INTELLIGENCE_GATE=true" >> "$GITHUB_ENV"
           echo "INTELLIGENCE_BATCH_SIZE=${{ inputs.intelligence_batch_size || '100' }}" >> "$GITHUB_ENV"
           echo "INTELLIGENCE_MAX_ROUNDS=40" >> "$GITHUB_ENV"
+          echo "GDELT_TIMEOUT_SECONDS=30" >> "$GITHUB_ENV"
+          echo "GDELT_BATCH_SIZE=10" >> "$GITHUB_ENV"
+          echo "GDELT_DELAY_SECONDS=5.2" >> "$GITHUB_ENV"
           if [ -n "${{ secrets.GOOGLE_PLACES_API_KEY }}" ]; then
             echo "GOOGLE_PLACES_ENABLED=true" >> "$GITHUB_ENV"
             echo "GOOGLE_PLACES_API_KEY=${{ secrets.GOOGLE_PLACES_API_KEY }}" >> "$GITHUB_ENV"

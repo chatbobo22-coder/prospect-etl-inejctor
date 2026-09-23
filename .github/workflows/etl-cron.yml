@@ -104,3 +104,6 @@ jobs:
             args="$args --force"
           fi
           python -m cnpj_etl.cli run $args
+
+      - name: Publish ready A/B leads to Outreach
+        run: python -m cnpj_etl.cli publish-ready

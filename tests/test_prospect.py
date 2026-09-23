@@ -1,8 +1,18 @@
 from cnpj_etl.prospect import (
+    CORE_INTELLIGENCE_SOURCES,
     classify_lead_quality,
     evaluate_qualification,
     select_contact_channel,
 )
+
+
+def test_only_identity_and_contact_sources_block_publication():
+    assert CORE_INTELLIGENCE_SOURCES == (
+        "receita",
+        "email_quality",
+        "website",
+        "rdap",
+    )
 
 
 def _base_row(**overrides):

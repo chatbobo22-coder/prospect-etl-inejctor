@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import csv
 import io
 import json
+import logging
 import os
 import re
 from urllib.parse import quote, urljoin, urlparse
@@ -17,6 +18,8 @@ from ..enrichment.models import EnrichSettings
 from ..enrichment.website import http_session, safe_fetch
 from .models import IntelligenceSettings, Person, Signal, SourceResult
 from .email_quality import verify_email
+
+log = logging.getLogger(__name__)
 
 ADMIN_QUALIFICATIONS = {"05", "10", "16", "17", "49"}
 DECISION_WORDS = re.compile(
@@ -75,9 +78,13 @@ def collect_receita(conn, company: dict, _: IntelligenceSettings) -> SourceResul
     ]
     capital = float(company.get("capital_social") or 0)
     if capital >= 1_000_000:
-        signals.append(Signal("capital_social", "capacity", "Capital social acima de R$ 1 milhão", 10, 100))
+        signals.append(
+            Signal("capital_social", "capacity", "Capital social acima de R$ 1 milhão", 10, 100)
+        )
     elif capital >= 100_000:
-        signals.append(Signal("capital_social", "capacity", "Capital social acima de R$ 100 mil", 6, 100))
+        signals.append(
+            Signal("capital_social", "capacity", "Capital social acima de R$ 100 mil", 6, 100)
+        )
     elif capital > 0:
         signals.append(Signal("capital_social", "capacity", "Capital social declarado", 2, 100))
     branches = conn.execute(
@@ -95,7 +102,9 @@ def collect_receita(conn, company: dict, _: IntelligenceSettings) -> SourceResul
                 raw_data={"active_branches": branches},
             )
         )
-    return SourceResult("receita", people=people, signals=signals, metadata={"partners": len(people)})
+    return SourceResult(
+        "receita", people=people, signals=signals, metadata={"partners": len(people)}
+    )
 
 
 def collect_email_quality(_: object, company: dict, settings: IntelligenceSettings) -> SourceResult:
@@ -145,7 +154,9 @@ def collect_website(conn, company: dict, settings: IntelligenceSettings) -> Sour
     queue = [url]
     seen: set[str] = set()
     people: list[Person] = []
-    signals: list[Signal] = [Signal("valid_website", "presence", "Site institucional validado", 3, 95, source_url=url)]
+    signals: list[Signal] = [
+        Signal("valid_website", "presence", "Site institucional validado", 3, 95, source_url=url)
+    ]
     technologies = []
     for platform in company.get("plataformas_detectadas") or []:
         technologies.append(
@@ -173,9 +184,20 @@ def collect_website(conn, company: dict, settings: IntelligenceSettings) -> Sour
             )
         )
     if not company.get("has_chat"):
-        signals.append(Signal("no_chat", "pain", "Site sem atendimento por chat", 5, 85, source_url=url))
+        signals.append(
+            Signal("no_chat", "pain", "Site sem atendimento por chat", 5, 85, source_url=url)
+        )
     if not company.get("has_contact_form"):
-        signals.append(Signal("no_contact_form", "pain", "Site sem formulário de contato detectado", 4, 80, source_url=url))
+        signals.append(
+            Signal(
+                "no_contact_form",
+                "pain",
+                "Site sem formulário de contato detectado",
+                4,
+                80,
+                source_url=url,
+            )
+        )
     if company.get("commerce_maturity") in {"catalogo_sem_checkout", "sem_ecommerce"}:
         signals.append(
             Signal(
@@ -204,7 +226,18 @@ def collect_website(conn, company: dict, settings: IntelligenceSettings) -> Sour
             label = f"{anchor.get_text(' ', strip=True)} {href}".lower()
             if any(word in label for word in ("carreira", "trabalhe-conosco", "vagas", "jobs")):
                 has_careers = True
-            if any(word in label for word in ("equipe", "time", "team", "diretoria", "leadership", "quem-somos", "sobre")):
+            if any(
+                word in label
+                for word in (
+                    "equipe",
+                    "time",
+                    "team",
+                    "diretoria",
+                    "leadership",
+                    "quem-somos",
+                    "sobre",
+                )
+            ):
                 if _same_domain(url, href) and href not in seen and href not in queue:
                     queue.append(href)
     if has_careers:
@@ -239,7 +272,9 @@ def collect_rdap(_: object, company: dict, settings: IntelligenceSettings) -> So
         domain = (urlparse(site).hostname or "").lower().removeprefix("www.")
     if not re.fullmatch(r"[a-z0-9.-]+\.[a-z]{2,}", domain):
         return SourceResult("rdap", status="no_data", metadata={"reason": "no_domain"})
-    response = requests.get(f"https://rdap.org/domain/{quote(domain, safe='.')}", timeout=settings.request_timeout)
+    response = requests.get(
+        f"https://rdap.org/domain/{quote(domain, safe='.')}", timeout=settings.request_timeout
+    )
     if response.status_code == 404:
         return SourceResult("rdap", status="no_data", metadata={"domain": domain})
     response.raise_for_status()
@@ -256,7 +291,10 @@ def collect_rdap(_: object, company: dict, settings: IntelligenceSettings) -> So
                 f"Domínio com {age_years:.1f} anos",
                 5 if age_years >= 5 else 3 if age_years >= 2 else 1,
                 80,
-                raw_data={"registered_at": registered.isoformat(), "age_years": round(age_years, 1)},
+                raw_data={
+                    "registered_at": registered.isoformat(),
+                    "age_years": round(age_years, 1),
+                },
             )
         )
     return SourceResult("rdap", signals=signals, metadata={"domain": domain, "events": events})
@@ -267,19 +305,39 @@ def collect_gdelt(_: object, company: dict, settings: IntelligenceSettings) -> S
     if not name or len(name.strip()) < 4:
         return SourceResult("gdelt", status="no_data")
     query = f'"{name.strip()}"'
-    response = requests.get(
-        "https://api.gdeltproject.org/api/v2/doc/doc",
-        params={
-            "query": query,
-            "mode": "ArtList",
-            "format": "json",
-            "maxrecords": settings.gdelt_max_records,
-            "timespan": "3months",
-        },
-        timeout=settings.request_timeout,
-    )
-    response.raise_for_status()
-    articles = response.json().get("articles", [])
+    try:
+        response = requests.get(
+            "https://api.gdeltproject.org/api/v2/doc/doc",
+            params={
+                "query": query,
+                "mode": "ArtList",
+                "format": "json",
+                "maxrecords": settings.gdelt_max_records,
+                "timespan": "3months",
+            },
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "MestreLead/1.0 (public-company-intelligence)",
+            },
+            timeout=max(settings.request_timeout, settings.gdelt_timeout_seconds),
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        status_code = getattr(getattr(exc, "response", None), "status_code", None)
+        reason = "rate_limited" if status_code == 429 else "temporarily_unavailable"
+        log.warning("GDELT indisponível para %s: %s", company.get("cnpj"), exc)
+        return SourceResult(
+            "gdelt",
+            status="skipped",
+            metadata={
+                "reason": "temporarily_unavailable",
+                "detail": reason,
+                "status_code": status_code,
+                "error_type": type(exc).__name__,
+            },
+        )
+    articles = payload.get("articles", []) if isinstance(payload, dict) else []
     signals: list[Signal] = []
     for article in articles:
         title = article.get("title") or ""
@@ -315,7 +373,9 @@ def collect_google_places(_: object, company: dict, __: IntelligenceSettings) ->
         return SourceResult("google_places", status="skipped", metadata={"reason": "not_checked"})
     if not company.get("google_place_id"):
         return SourceResult("google_places", status="no_data")
-    signals = [Signal("business_listing", "confidence", "Operação confirmada no Google Business", 4, 90)]
+    signals = [
+        Signal("business_listing", "confidence", "Operação confirmada no Google Business", 4, 90)
+    ]
     rating_count = int(company.get("google_rating_count") or 0)
     rating = float(company.get("google_rating") or 0)
     if rating_count >= 20:
@@ -329,7 +389,9 @@ def collect_google_places(_: object, company: dict, __: IntelligenceSettings) ->
                 source_url=company.get("google_maps_url"),
             )
         )
-    return SourceResult("google_places", signals=signals, metadata={"place_id": company["google_place_id"]})
+    return SourceResult(
+        "google_places", signals=signals, metadata={"place_id": company["google_place_id"]}
+    )
 
 
 def collect_pagespeed(_: object, company: dict, settings: IntelligenceSettings) -> SourceResult:
@@ -340,16 +402,41 @@ def collect_pagespeed(_: object, company: dict, settings: IntelligenceSettings) 
         return SourceResult("pagespeed", status="no_data")
     response = requests.get(
         "https://www.googleapis.com/pagespeedonline/v5/runPagespeed",
-        params={"url": url, "strategy": "mobile", "category": "performance", "key": settings.pagespeed_api_key},
+        params={
+            "url": url,
+            "strategy": "mobile",
+            "category": "performance",
+            "key": settings.pagespeed_api_key,
+        },
         timeout=max(30, settings.request_timeout),
     )
     response.raise_for_status()
-    score = round(float(response.json().get("lighthouseResult", {}).get("categories", {}).get("performance", {}).get("score", 0)) * 100)
+    score = round(
+        float(
+            response.json()
+            .get("lighthouseResult", {})
+            .get("categories", {})
+            .get("performance", {})
+            .get("score", 0)
+        )
+        * 100
+    )
     signals = []
     if score < 50:
-        signals.append(Signal("slow_site", "pain", f"Site móvel lento ({score}/100)", 10, 95, source_url=url))
+        signals.append(
+            Signal("slow_site", "pain", f"Site móvel lento ({score}/100)", 10, 95, source_url=url)
+        )
     elif score < 75:
-        signals.append(Signal("site_performance", "pain", f"Desempenho móvel pode melhorar ({score}/100)", 5, 95, source_url=url))
+        signals.append(
+            Signal(
+                "site_performance",
+                "pain",
+                f"Desempenho móvel pode melhorar ({score}/100)",
+                5,
+                95,
+                source_url=url,
+            )
+        )
     return SourceResult("pagespeed", signals=signals, metadata={"performance_score": score})
 
 
@@ -387,10 +474,14 @@ def collect_cvm(_: object, company: dict, settings: IntelligenceSettings) -> Sou
     return SourceResult("cvm", signals=[signal], metadata={"cvm_code": record.get("CD_CVM")})
 
 
-def collect_configured_provider(_: object, company: dict, settings: IntelligenceSettings, source_code: str) -> SourceResult:
+def collect_configured_provider(
+    _: object, company: dict, settings: IntelligenceSettings, source_code: str
+) -> SourceResult:
     template = os.getenv(f"{source_code.upper()}_LOOKUP_URL_TEMPLATE", "").strip()
     if not template:
-        return SourceResult(source_code, status="skipped", metadata={"reason": "provider_not_configured"})
+        return SourceResult(
+            source_code, status="skipped", metadata={"reason": "provider_not_configured"}
+        )
     url = template.format(cnpj=company["cnpj"], name=quote(company.get("razao_social") or ""))
     headers = {"Accept": "application/json"}
     if settings.provider_api_key:
@@ -421,7 +512,9 @@ COLLECTORS = {
 }
 
 
-def collect_source(source_code: str, conn, company: dict, settings: IntelligenceSettings) -> SourceResult:
+def collect_source(
+    source_code: str, conn, company: dict, settings: IntelligenceSettings
+) -> SourceResult:
     collector = COLLECTORS.get(source_code)
     if collector:
         return collector(conn, company, settings)
@@ -487,7 +580,9 @@ def _deduplicate_people(people: list[Person]) -> list[Person]:
 
 
 def _same_domain(base: str, candidate: str) -> bool:
-    return (urlparse(base).hostname or "").removeprefix("www.") == (urlparse(candidate).hostname or "").removeprefix("www.")
+    return (urlparse(base).hostname or "").removeprefix("www.") == (
+        urlparse(candidate).hostname or ""
+    ).removeprefix("www.")
 
 
 def _parse_date(value: str | None) -> datetime | None:
