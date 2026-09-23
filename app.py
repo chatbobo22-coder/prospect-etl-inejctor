@@ -448,6 +448,11 @@ def _database_telemetry(workflow_run_id: int) -> dict[str, Any]:
         }
         for row in source_rows
     ]
+    core_sources = {"receita", "email_quality", "website", "rdap", "cvm", "gdelt"}
+    core_source_data = [item for item in source_data if item["source"] in core_sources]
+    core_processed_checks = sum(
+        item["completed"] + item["failed"] + item["running"] for item in core_source_data
+    )
     latest_source = latest_source_run[0] if latest_source_run else None
     return {
         "etl_run": run_data,
@@ -467,6 +472,8 @@ def _database_telemetry(workflow_run_id: int) -> dict[str, Any]:
             "completed_checks": sum(item["completed"] for item in source_data),
             "failed_checks": sum(item["failed"] for item in source_data),
             "running_checks": sum(item["running"] for item in source_data),
+            "core_processed_checks": core_processed_checks,
+            "core_total_checks": int(counts[1] or 0) * len(core_sources),
             "current_source": (
                 latest_source if latest_source_run and latest_source_run[1] == "running" else None
             ),
