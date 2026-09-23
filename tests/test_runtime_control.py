@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from app import _runtime_log_lines, _sanitize_log_lines, _workflow_progress
+from app import (
+    _runtime_log_lines,
+    _sanitize_log_lines,
+    _workflow_progress,
+    injector_config,
+)
 
 
 def test_workflow_progress_tracks_steps_without_reaching_100_early():
@@ -99,3 +104,9 @@ def test_runtime_telemetry_uses_exact_counts_not_postgres_estimates():
     assert "SELECT count(*) FROM cnpj.prospectos_qualificados" in source
     assert "n_live_tup" not in source
     assert "reltuples" not in source
+
+
+def test_injector_config_does_not_restore_legacy_cnae_whitelist(monkeypatch):
+    monkeypatch.setenv("FILTER_CNAES", "4751201,6201501")
+
+    assert injector_config()["config"]["cnaes"] == ""

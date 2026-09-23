@@ -526,7 +526,10 @@ def injector_config():
             "source": "Receita Federal - Dados Abertos do CNPJ",
             "base_url": settings.base_url,
             "competence": "",
-            "cnaes": ",".join(sorted(settings.filter_cnaes)),
+            # Um valor legado no ambiente não deve reativar silenciosamente a
+            # antiga whitelist. A restrição só existe quando o operador a
+            # informa explicitamente ao iniciar a carga.
+            "cnaes": "",
             "ufs": "",
             "geographic_scope": "Brasil inteiro",
             "active_only": settings.filter_active_only,
