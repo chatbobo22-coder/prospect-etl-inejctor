@@ -27,6 +27,8 @@ def test_sync_only_publishes_qualified_ab_leads():
     assert "p.lead_quality IN ('A', 'B')" in conn.query
     assert "INSERT INTO outreach.leads" in conn.query
     assert "ON CONFLICT (cnpj) DO UPDATE" in conn.query
+    assert "p.whatsapp_url" in conn.query
+    assert "whatsapp = EXCLUDED.whatsapp" in conn.query
 
 
 def test_sync_can_share_an_outer_transaction():

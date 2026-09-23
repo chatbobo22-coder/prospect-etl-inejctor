@@ -10,7 +10,7 @@ def sync_qualified_leads(conn, *, commit: bool = True) -> int:
     result = conn.execute(
         r"""
         INSERT INTO outreach.leads
-          (cnpj, company_name, trade_name, email, email_domain, phone, contact_role,
+          (cnpj, company_name, trade_name, email, email_domain, phone, whatsapp, contact_role,
            lead_score, confidence_score, source_payload, source, status, updated_at)
         SELECT
           p.cnpj,
@@ -19,6 +19,7 @@ def sync_qualified_leads(conn, *, commit: bool = True) -> int:
           lower(btrim(p.email)),
           split_part(lower(btrim(p.email)), '@', 2),
           p.telefone_1,
+          p.whatsapp_url,
           CASE
             WHEN split_part(lower(btrim(p.email)), '@', 1)
                    IN ('vendas', 'comercial', 'sales') THEN 'sales'
@@ -45,6 +46,7 @@ def sync_qualified_leads(conn, *, commit: bool = True) -> int:
           email = EXCLUDED.email,
           email_domain = EXCLUDED.email_domain,
           phone = EXCLUDED.phone,
+          whatsapp = EXCLUDED.whatsapp,
           contact_role = EXCLUDED.contact_role,
           lead_score = EXCLUDED.lead_score,
           confidence_score = EXCLUDED.confidence_score,
