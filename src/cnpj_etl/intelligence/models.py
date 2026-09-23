@@ -9,7 +9,9 @@ from typing import Any
 
 
 def _csv_env(name: str, default: str) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(v.strip().lower() for v in os.getenv(name, default).split(",") if v.strip()))
+    return tuple(
+        dict.fromkeys(v.strip().lower() for v in os.getenv(name, default).split(",") if v.strip())
+    )
 
 
 @dataclass(frozen=True)
@@ -18,7 +20,7 @@ class IntelligenceSettings:
     sources: tuple[str, ...] = field(
         default_factory=lambda: _csv_env(
             "INTELLIGENCE_SOURCES",
-            "receita,email_quality,website,rdap,cvm,gdelt,pncp,inpi,google_places,pagespeed,meta_ads,google_ads,people_provider",
+            "receita,email_quality,website,rdap,cvm,gdelt",
         )
     )
     request_timeout: int = int(os.getenv("INTELLIGENCE_REQUEST_TIMEOUT", "15"))

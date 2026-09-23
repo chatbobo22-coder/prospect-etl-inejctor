@@ -182,9 +182,22 @@ WHERE qualification_status = 'qualified'
 ORDER BY lead_score DESC;
 ```
 
-### Qualidade A/B para outreach
+### Qualidade A/B e retenção mínima
 
-A qualificação v3 mantém somente empresas com e-mail válido e qualidade `A` ou `B`.
+A qualificação v4 mantém permanentemente somente empresas com e-mail válido e qualidade
+`A` ou `B`. A leitura da Receita faz primeiro uma triagem barata antes do banco: empresa
+ativa, matriz, e-mail válido, endereço não contábil/fiscal/NFe, pelo menos 12 meses de
+atividade e CNAE aderente. Cada execução admite no máximo 4.000 candidatos novos para
+impedir que a área temporária cresça mais rápido do que o enriquecimento.
+O enriquecimento digital usa oito rodadas de 500 registros e a inteligência usa quarenta
+rodadas de 100, mantendo entrada e avaliação no mesmo teto de 4.000 empresas.
+
+O lote temporário é então verificado nas fontes Receita, qualidade técnica do e-mail,
+site institucional, RDAP, CVM e GDELT. Um lead só entra em
+`cnpj.prospectos_qualificados` se passar simultaneamente pelo score digital e pelo perfil
+de inteligência pública. A decisão compacta fica em `etl.candidate_decisions`; dados
+brutos e inteligência detalhada de rejeitados são apagados ao final da execução.
+
 Provedores gratuitos, como Gmail e Hotmail, são aceitos quando os demais sinais confirmam
 a qualidade do lead. Endereços de contabilidade, fiscal, NFe, faturamento, cobrança, DP e RH
 são bloqueados.
@@ -201,14 +214,19 @@ FILTER_REQUIRE_NOME_FANTASIA=true
 FILTER_REQUIRE_TELEFONE=true
 FILTER_REQUIRE_EMAIL=true
 FILTER_BLOCK_BACKOFFICE_EMAIL=true
+FILTER_HEADQUARTERS_ONLY=true
+FILTER_MAX_CANDIDATES_PER_RUN=4000
 FILTER_MIN_ACTIVITY_MONTHS=12
 FILTER_MIN_POPULATION=0
 PROSPECT_MIN_CONFIDENCE_SCORE=70
 PROSPECT_MIN_LEAD_SCORE=60
 PROSPECT_EXCLUDE_MEI=true
+STRICT_INTELLIGENCE_GATE=true
 ```
 
 A view `cnpj.v_prospectos_outreach_v3` entrega somente os leads aprovados A/B.
+Fontes que dependem de provedor ou chave externa não participam da aprovação enquanto não
+estiverem configuradas; ausência de integração nunca é contabilizada como consulta feita.
 
 ## Fonte
 

@@ -33,7 +33,7 @@ class EnrichSettings:
     external_api_key: str = os.getenv("ENRICH_EXTERNAL_API_KEY", "").strip()
     external_api_provider: str = os.getenv("ENRICH_EXTERNAL_API_PROVIDER", "").strip().lower()
     candidate_view: str = os.getenv("ENRICH_CANDIDATE_VIEW", "cnpj.v_prospect_candidates")
-    max_rounds: int = int(os.getenv("ENRICH_MAX_ROUNDS", "40"))
+    max_rounds: int = int(os.getenv("ENRICH_MAX_ROUNDS", "8"))
     enrichment_version: str = ENRICHMENT_VERSION
     no_site_retry_days: int = int(os.getenv("ENRICH_NO_SITE_RETRY_DAYS", "30"))
     failed_retry_hours: int = int(os.getenv("ENRICH_FAILED_RETRY_HOURS", "24"))

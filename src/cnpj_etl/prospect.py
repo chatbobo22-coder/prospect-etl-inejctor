@@ -1,4 +1,4 @@
-"""Qualificação de prospects v3 para outreach automatizado."""
+"""Qualificação de prospects v4 para outreach automatizado."""
 
 from __future__ import annotations
 
@@ -10,7 +10,15 @@ from psycopg.types.json import Jsonb
 from .enrichment.email import classify_email_role, is_valid_email
 
 log = logging.getLogger(__name__)
-QUALIFICATION_VERSION = "v3"
+QUALIFICATION_VERSION = "v4"
+CORE_INTELLIGENCE_SOURCES = (
+    "receita",
+    "email_quality",
+    "website",
+    "rdap",
+    "cvm",
+    "gdelt",
+)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -76,11 +84,17 @@ def classify_lead_quality(row: dict, channel: str | None) -> str | None:
         or row.get("whatsapp_valid")
         or row.get("google_business_status") == "OPERATIONAL"
     )
+    digital_quality = None
     if lead >= 70 and confidence >= 70 and has_strong_signal:
-        return "A" if delivery == "valid" else "B"
-    if lead >= 60 and confidence >= 70:
-        return "B"
-    return None
+        digital_quality = "A" if delivery == "valid" else "B"
+    elif lead >= 60 and confidence >= 70:
+        digital_quality = "B"
+    if not _env_flag("STRICT_INTELLIGENCE_GATE", False):
+        return digital_quality
+    profile_quality = row.get("profile_quality")
+    if digital_quality not in {"A", "B"} or profile_quality not in {"A", "B"}:
+        return None
+    return "A" if digital_quality == profile_quality == "A" else "B"
 
 
 def evaluate_qualification(row: dict) -> tuple[str, list[str], list[str]]:
@@ -115,6 +129,11 @@ def evaluate_qualification(row: dict) -> tuple[str, list[str], list[str]]:
         rejection.append("email_backoffice_bloqueado")
     if quality is None:
         rejection.append("fora_qualidade_a_b")
+    if _env_flag("STRICT_INTELLIGENCE_GATE", False):
+        if row.get("profile_quality") not in {"A", "B"}:
+            rejection.append("perfil_inteligencia_insuficiente")
+        if int(row.get("data_confidence_score") or 0) < 6:
+            rejection.append("fontes_publicas_insuficientes")
     if row.get("deliverability_status") == "invalid":
         rejection.append("email_tecnicamente_invalido")
     if "deliverability_status" in row and not row.get("deliverability_status"):
@@ -174,6 +193,8 @@ def evaluate_qualification(row: dict) -> tuple[str, list[str], list[str]]:
         "email_tecnicamente_invalido",
         "email_aguardando_verificacao",
         "fora_qualidade_a_b",
+        "perfil_inteligencia_insuficiente",
+        "fontes_publicas_insuficientes",
         "mei_excluido",
     }
     hard_fail = [
@@ -213,17 +234,31 @@ def promote_qualified(conn) -> dict[str, int]:
           d.presence_maturity, d.commerce_maturity, d.lead_classification,
           d.decisor_nome, d.decisor_qualificacao,
           d.faixa_faturamento_estimada, d.faixa_porte_receita,
-          v.capital_social, v.opcao_mei, v.opcao_simples,
+          v.capital_social, v.opcao_mei, v.opcao_simples, v.source_competence,
           d.email_tipo, d.email_original, d.sinais
           ,CASE WHEN ev.expires_at>now() THEN ev.deliverability_status END,
           ev.risk_score AS email_risk_score,
           gm.is_primary AS group_primary, gm.group_key
+          ,ip.profile_score, ip.profile_quality, ip.data_confidence_score,
+          ip.capacity_score AS intelligence_capacity_score,
+          ip.intent_score AS intelligence_intent_score,
+          ip.estimated_capacity_band, ip.summary AS intelligence_summary,
+          ip.reasons AS intelligence_reasons
         FROM cnpj.v_prospect_candidates v
         JOIN cnpj.digital_presenca d ON d.cnpj = v.cnpj
+        JOIN intelligence.company_profiles ip ON ip.cnpj=v.cnpj
         LEFT JOIN intelligence.email_verifications ev ON ev.cnpj=v.cnpj
         LEFT JOIN intelligence.company_group_members gm ON gm.cnpj=v.cnpj
         WHERE d.enrich_status IN ('done', 'partial', 'no_site', 'failed')
-        """
+          AND (
+            SELECT count(DISTINCT state.source_code)
+            FROM intelligence.company_source_state state
+            WHERE state.cnpj=v.cnpj
+              AND state.source_code = ANY(%s)
+              AND state.status IN ('success', 'no_data', 'skipped')
+          ) = %s
+        """,
+        (list(CORE_INTELLIGENCE_SOURCES), len(CORE_INTELLIGENCE_SOURCES)),
     ).fetchall()
 
     columns = [
@@ -267,6 +302,7 @@ def promote_qualified(conn) -> dict[str, int]:
         "capital_social",
         "opcao_mei",
         "opcao_simples",
+        "source_competence",
         "email_tipo",
         "email_original",
         "sinais",
@@ -274,6 +310,14 @@ def promote_qualified(conn) -> dict[str, int]:
         "email_risk_score",
         "group_primary",
         "group_key",
+        "profile_score",
+        "profile_quality",
+        "data_confidence_score",
+        "intelligence_capacity_score",
+        "intelligence_intent_score",
+        "estimated_capacity_band",
+        "intelligence_summary",
+        "intelligence_reasons",
     ]
 
     stats = {"qualified": 0, "rejected": 0, "review_required": 0, "blocked": 0, "updated": 0}
@@ -284,6 +328,49 @@ def promote_qualified(conn) -> dict[str, int]:
         channel, contact_value, contact_conf, contact_role = select_contact_channel(item)
         lead_quality = classify_lead_quality(item, channel)
         stats[status] = stats.get(status, 0) + 1
+
+        decision = (
+            f"qualified_{lead_quality.lower()}"
+            if status == "qualified" and lead_quality
+            else "rejected"
+        )
+        conn.execute(
+            """
+            INSERT INTO etl.candidate_decisions
+              (cnpj,cnpj_basico,decision,profile_score,data_confidence_score,
+               reason_codes,source_competence,evaluated_at,next_review_at,updated_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,now(),now()+interval '30 days',now())
+            ON CONFLICT (cnpj) DO UPDATE SET
+              decision=EXCLUDED.decision,profile_score=EXCLUDED.profile_score,
+              data_confidence_score=EXCLUDED.data_confidence_score,
+              reason_codes=EXCLUDED.reason_codes,source_competence=EXCLUDED.source_competence,
+              evaluated_at=now(),next_review_at=EXCLUDED.next_review_at,updated_at=now()
+            """,
+            (
+                item["cnpj"],
+                item["cnpj_basico"],
+                decision,
+                item.get("profile_score") or 0,
+                item.get("data_confidence_score") or 0,
+                rejection or reasons,
+                item.get("source_competence"),
+            ),
+        )
+        if decision == "rejected":
+            conn.execute("DELETE FROM cnpj.prospectos_qualificados WHERE cnpj=%s", (item["cnpj"],))
+            continue
+
+        intelligence_payload = {
+            "profile_score": item.get("profile_score"),
+            "profile_quality": item.get("profile_quality"),
+            "data_confidence_score": item.get("data_confidence_score"),
+            "capacity_score": item.get("intelligence_capacity_score"),
+            "intent_score": item.get("intelligence_intent_score"),
+            "summary": item.get("intelligence_summary"),
+            "reasons": item.get("intelligence_reasons") or [],
+        }
+        signals_payload = dict(item["sinais"] or {})
+        signals_payload["intelligence_profile"] = intelligence_payload
 
         conn.execute(
             """
@@ -392,7 +479,8 @@ def promote_qualified(conn) -> dict[str, int]:
                 "lead_classification": item["lead_classification"],
                 "decisor_nome": item["decisor_nome"],
                 "decisor_qualificacao": item["decisor_qualificacao"],
-                "faixa_faturamento_estimada": item["faixa_porte_receita"]
+                "faixa_faturamento_estimada": item["estimated_capacity_band"]
+                or item["faixa_porte_receita"]
                 or item["faixa_faturamento_estimada"],
                 "capital_social": item["capital_social"],
                 "opcao_mei": item["opcao_mei"],
@@ -406,7 +494,7 @@ def promote_qualified(conn) -> dict[str, int]:
                 "contact_confidence": contact_conf,
                 "contact_role": contact_role,
                 "qualification_version": QUALIFICATION_VERSION,
-                "sinais": Jsonb(item["sinais"] if item.get("sinais") else {}),
+                "sinais": Jsonb(signals_payload),
             },
         )
         stats["updated"] += 1
@@ -416,5 +504,5 @@ def promote_qualified(conn) -> dict[str, int]:
         "SELECT COUNT(*) FROM cnpj.prospectos_qualificados WHERE qualification_status = 'qualified'"
     ).fetchone()[0]
     stats["total_qualified"] = total_q
-    log.info("Qualificação v3 (qualidade A/B): %s", stats)
+    log.info("Qualificação v4 (qualidade A/B + inteligência pública): %s", stats)
     return stats

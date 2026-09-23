@@ -182,9 +182,65 @@ def test_requires_valid_email_when_enabled():
 
 def test_minimum_activity_age():
     today = date(2026, 9, 22)
-    assert has_minimum_activity_age(
-        {"data_inicio_atividade": "20250922"}, 12, today=today
+    assert has_minimum_activity_age({"data_inicio_atividade": "20250922"}, 12, today=today)
+    assert not has_minimum_activity_age({"data_inicio_atividade": "20251001"}, 12, today=today)
+
+
+def test_storage_funnel_keeps_headquarters_only():
+    ctx = FilterContext(
+        frozenset(["4751201"]),
+        headquarters_only=True,
+        require_nome_fantasia=False,
+        require_telefone=False,
     )
-    assert not has_minimum_activity_age(
-        {"data_inicio_atividade": "20251001"}, 12, today=today
+    item = {
+        "cnpj": "12345678000200",
+        "identificador_matriz_filial": "2",
+        "situacao_cadastral": "02",
+        "cnae_fiscal_principal": "4751201",
+    }
+    assert not matches_estabelecimento(item, ctx)
+    item["identificador_matriz_filial"] = "1"
+    assert matches_estabelecimento(item, ctx)
+
+
+def test_storage_funnel_skips_recently_decided_cnpj():
+    cnpj = "12345678000100"
+    ctx = FilterContext(
+        frozenset(["4751201"]),
+        excluded_cnpjs=frozenset([cnpj]),
+        require_nome_fantasia=False,
+        require_telefone=False,
     )
+    item = {
+        "cnpj": cnpj,
+        "situacao_cadastral": "02",
+        "cnae_fiscal_principal": "4751201",
+    }
+    assert not matches_estabelecimento(item, ctx)
+
+
+def test_candidate_budget_stops_new_companies_but_keeps_selected_one():
+    ctx = FilterContext(
+        frozenset(["4751201"]),
+        max_candidates=1,
+        require_nome_fantasia=False,
+        require_telefone=False,
+    )
+    first = {
+        "cnpj": "12345678000190",
+        "cnpj_basico": "12345678",
+        "situacao_cadastral": "02",
+        "cnae_fiscal_principal": "4751201",
+    }
+    second = {
+        "cnpj": "99999999000190",
+        "cnpj_basico": "99999999",
+        "situacao_cadastral": "02",
+        "cnae_fiscal_principal": "4751201",
+    }
+
+    assert matches_estabelecimento(first, ctx)
+    track_estabelecimento(first, ctx)
+    assert matches_estabelecimento(first, ctx)
+    assert not matches_estabelecimento(second, ctx)

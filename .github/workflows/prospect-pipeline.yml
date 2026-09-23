@@ -91,7 +91,7 @@ on:
         description: "Fontes de inteligência separadas por vírgula"
         required: false
         type: string
-        default: "receita,email_quality,website,rdap,cvm,gdelt,pncp,inpi,google_places,pagespeed,meta_ads,google_ads,people_provider"
+        default: "receita,email_quality,website,rdap,cvm,gdelt"
       intelligence_batch_size:
         description: "Empresas consultadas por fonte e por execução"
         required: false
@@ -144,6 +144,8 @@ jobs:
           echo "FILTER_REQUIRE_TELEFONE=${{ inputs.require_telefone == true }}" >> "$GITHUB_ENV"
           echo "FILTER_REQUIRE_EMAIL=${{ inputs.require_email != false }}" >> "$GITHUB_ENV"
           echo "FILTER_BLOCK_BACKOFFICE_EMAIL=${{ inputs.block_backoffice_email != false }}" >> "$GITHUB_ENV"
+          echo "FILTER_HEADQUARTERS_ONLY=true" >> "$GITHUB_ENV"
+          echo "FILTER_MAX_CANDIDATES_PER_RUN=4000" >> "$GITHUB_ENV"
           echo "FILTER_MIN_ACTIVITY_MONTHS=${{ inputs.min_activity_months || '12' }}" >> "$GITHUB_ENV"
           echo "FILTER_MIN_POPULATION=${{ inputs.min_population || '0' }}" >> "$GITHUB_ENV"
           echo "CHUNK_SIZE=5000" >> "$GITHUB_ENV"
@@ -151,7 +153,7 @@ jobs:
           echo "IBGE_POPULATION_YEAR=2024" >> "$GITHUB_ENV"
           echo "ENRICH_CANDIDATE_VIEW=cnpj.v_prospect_candidates" >> "$GITHUB_ENV"
           echo "ENRICH_BATCH_SIZE=${{ inputs.enrich_batch_size || '500' }}" >> "$GITHUB_ENV"
-          echo "ENRICH_MAX_ROUNDS=50" >> "$GITHUB_ENV"
+          echo "ENRICH_MAX_ROUNDS=8" >> "$GITHUB_ENV"
           echo "ENRICH_BRASILAPI=true" >> "$GITHUB_ENV"
           echo "ENRICH_DELAY_SECONDS=0.3" >> "$GITHUB_ENV"
           echo "PROSPECT_MIN_CONFIDENCE_SCORE=${{ inputs.min_confidence_score || '70' }}" >> "$GITHUB_ENV"
@@ -161,7 +163,8 @@ jobs:
           echo "ENRICH_NO_SITE_RETRY_DAYS=30" >> "$GITHUB_ENV"
           echo "CRAWLER_MAX_PAGES=8" >> "$GITHUB_ENV"
           echo "GOOGLE_PLACES_ENABLED=false" >> "$GITHUB_ENV"
-          echo "INTELLIGENCE_SOURCES=${{ inputs.intelligence_sources || 'receita,email_quality,website,rdap,cvm,gdelt,pncp,inpi,google_places,pagespeed,meta_ads,google_ads,people_provider' }}" >> "$GITHUB_ENV"
+          echo "INTELLIGENCE_SOURCES=${{ inputs.intelligence_sources || 'receita,email_quality,website,rdap,cvm,gdelt' }}" >> "$GITHUB_ENV"
+          echo "STRICT_INTELLIGENCE_GATE=true" >> "$GITHUB_ENV"
           echo "INTELLIGENCE_BATCH_SIZE=${{ inputs.intelligence_batch_size || '100' }}" >> "$GITHUB_ENV"
           echo "INTELLIGENCE_MAX_ROUNDS=40" >> "$GITHUB_ENV"
           if [ -n "${{ secrets.GOOGLE_PLACES_API_KEY }}" ]; then
@@ -192,7 +195,7 @@ jobs:
           if [ -n "${{ inputs.competence }}" ]; then
             args="$args --competence ${{ inputs.competence }}"
           fi
-          if [ "${{ inputs.force_etl }}" = "true" ]; then
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.force_etl }}" = "true" ]; then
             args="$args --force"
           fi
           python -m cnpj_etl.cli run $args
@@ -233,7 +236,7 @@ jobs:
                   "SELECT COUNT(*) FROM cnpj.prospectos_qualificados WHERE qualification_status = 'review_required'"
               ).fetchone()[0]
               rejected = conn.execute(
-                  "SELECT COUNT(*) FROM cnpj.prospectos_qualificados WHERE qualification_status = 'rejected'"
+                  "SELECT COUNT(*) FROM etl.candidate_decisions WHERE decision = 'rejected'"
               ).fetchone()[0]
               gplaces = conn.execute(
                   "SELECT COALESCE(SUM(google_places_requests),0) FROM etl.enrichment_runs "

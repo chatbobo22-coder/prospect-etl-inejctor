@@ -46,10 +46,14 @@ def prepare_run_settings(settings, db, auto_bootstrap: bool = False):
                     extras.append("e-mail válido obrigatório")
                 if settings.filter_block_backoffice_email:
                     extras.append("e-mails contábeis/fiscais bloqueados")
-                if settings.filter_min_activity_months > 0:
+                if settings.filter_headquarters_only:
+                    extras.append("somente matrizes")
+                if settings.filter_max_candidates_per_run > 0:
                     extras.append(
-                        f"atividade >= {settings.filter_min_activity_months} meses"
+                        f"até {settings.filter_max_candidates_per_run} candidatos novos"
                     )
+                if settings.filter_min_activity_months > 0:
+                    extras.append(f"atividade >= {settings.filter_min_activity_months} meses")
                 if settings.filter_min_population > 0:
                     extras.append(
                         f"municípios >= {settings.filter_min_population:,} hab".replace(",", ".")
@@ -73,6 +77,12 @@ def build_filter_context(settings, conn):
     from .filters import FilterContext
 
     allowed_municipios = frozenset()
+    excluded_cnpjs = frozenset(
+        row[0]
+        for row in conn.execute(
+            "SELECT cnpj FROM etl.candidate_decisions WHERE next_review_at > now()"
+        ).fetchall()
+    )
     if settings.filter_min_population > 0:
         allowed_municipios = load_allowed_municipios(conn, settings.filter_min_population)
         if not allowed_municipios:
@@ -96,7 +106,10 @@ def build_filter_context(settings, conn):
         block_backoffice_email=settings.filter_block_backoffice_email,
         min_activity_months=settings.filter_min_activity_months,
         min_population=settings.filter_min_population,
+        headquarters_only=settings.filter_headquarters_only,
+        max_candidates=settings.filter_max_candidates_per_run,
         allowed_municipios=allowed_municipios,
+        excluded_cnpjs=excluded_cnpjs,
     )
 
 

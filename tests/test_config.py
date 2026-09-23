@@ -13,6 +13,7 @@ def _reload_config(monkeypatch, **env):
         "FILTER_MIN_POPULATION",
         "FILTER_REQUIRE_NOME_FANTASIA",
         "FILTER_REQUIRE_TELEFONE",
+        "FILTER_MAX_CANDIDATES_PER_RUN",
     ):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
@@ -61,3 +62,4 @@ def test_national_and_broad_contact_defaults(monkeypatch):
     assert settings.filter_include_secondary_cnae is True
     assert settings.filter_require_nome_fantasia is False
     assert settings.filter_require_telefone is False
+    assert settings.filter_max_candidates_per_run == 4000

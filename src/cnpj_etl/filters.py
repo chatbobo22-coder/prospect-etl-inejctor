@@ -72,7 +72,11 @@ class FilterContext:
     block_backoffice_email: bool = True
     min_activity_months: int = 0
     min_population: int = 0
+    headquarters_only: bool = False
+    max_candidates: int = 0
     allowed_municipios: frozenset[tuple[str, str]] = field(default_factory=frozenset)
+    excluded_cnpjs: frozenset[str] = field(default_factory=frozenset)
+    selected_cnpjs: set[str] = field(default_factory=set)
     matched_basics: set[str] = field(default_factory=set)
 
     @property
@@ -153,6 +157,17 @@ def municipio_key(item: dict) -> tuple[str, str]:
 
 
 def matches_estabelecimento(item: dict, ctx: FilterContext) -> bool:
+    cnpj = item.get("cnpj") or ""
+    if cnpj in ctx.excluded_cnpjs:
+        return False
+    if (
+        ctx.max_candidates > 0
+        and cnpj not in ctx.selected_cnpjs
+        and len(ctx.selected_cnpjs) >= ctx.max_candidates
+    ):
+        return False
+    if ctx.headquarters_only and item.get("identificador_matriz_filial") != "1":
+        return False
     if ctx.active_only and item.get("situacao_cadastral") != ACTIVE_STATUS:
         return False
     if ctx.ufs and (item.get("uf") or "").upper() not in ctx.ufs:
@@ -194,6 +209,9 @@ def should_load_row(kind: str, item: dict, ctx: FilterContext | None) -> bool:
 
 
 def track_estabelecimento(item: dict, ctx: FilterContext) -> None:
+    cnpj = item.get("cnpj")
+    if cnpj:
+        ctx.selected_cnpjs.add(cnpj)
     basic = item.get("cnpj_basico")
     if basic:
         ctx.matched_basics.add(basic)

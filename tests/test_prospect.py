@@ -135,9 +135,7 @@ def test_mei_is_rejected_by_default():
 
 
 def test_email_waits_for_technical_verification():
-    status, rejection, _ = evaluate_qualification(
-        _base_row(deliverability_status=None)
-    )
+    status, rejection, _ = evaluate_qualification(_base_row(deliverability_status=None))
     assert status == "rejected"
     assert "email_aguardando_verificacao" in rejection
 
@@ -146,3 +144,29 @@ def test_risky_email_cannot_be_quality_a():
     row = _base_row(deliverability_status="risky")
     channel, *_ = select_contact_channel(row)
     assert classify_lead_quality(row, channel) == "B"
+
+
+def test_strict_gate_requires_public_intelligence_profile(monkeypatch):
+    monkeypatch.setenv("STRICT_INTELLIGENCE_GATE", "true")
+    row = _base_row(deliverability_status="valid")
+    channel, *_ = select_contact_channel(row)
+    assert classify_lead_quality(row, channel) is None
+    status, rejection, _ = evaluate_qualification(row)
+    assert status == "rejected"
+    assert "perfil_inteligencia_insuficiente" in rejection
+
+
+def test_strict_gate_combines_digital_and_public_quality(monkeypatch):
+    monkeypatch.setenv("STRICT_INTELLIGENCE_GATE", "true")
+    row = _base_row(
+        deliverability_status="valid",
+        profile_quality="B",
+        profile_score=68,
+        data_confidence_score=8,
+    )
+    channel, *_ = select_contact_channel(row)
+    assert classify_lead_quality(row, channel) == "B"
+    status, rejection, reasons = evaluate_qualification(row)
+    assert status == "qualified"
+    assert not rejection
+    assert "qualidade_b" in reasons

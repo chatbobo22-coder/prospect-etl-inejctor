@@ -5,15 +5,14 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 CATEGORY_LIMITS = {"fit": 25, "capacity": 20, "intent": 25, "pain": 20}
+QUALITY_A_MIN_SCORE = 65
+QUALITY_B_MIN_SCORE = 35
+QUALITY_MIN_CONFIDENCE = 6
 
 
 def calculate_profile(signals: list[dict], people: list[dict], states: list[dict]) -> dict:
     now = datetime.now(timezone.utc)
-    active = [
-        s
-        for s in signals
-        if not s.get("expires_at") or _aware(s["expires_at"]) > now
-    ]
+    active = [s for s in signals if not s.get("expires_at") or _aware(s["expires_at"]) > now]
     scores: dict[str, int] = {}
     for category, limit in CATEGORY_LIMITS.items():
         weighted = sum(
@@ -24,9 +23,7 @@ def calculate_profile(signals: list[dict], people: list[dict], states: list[dict
         scores[category] = max(0, min(limit, round(weighted)))
 
     succeeded = sorted({s["source_code"] for s in states if s.get("status") == "success"})
-    pending = sorted(
-        {s["source_code"] for s in states if s.get("status") in {"pending", "failed"}}
-    )
+    pending = sorted({s["source_code"] for s in states if s.get("status") in {"pending", "failed"}})
     confidence = min(10, len(succeeded) * 2 + (1 if active else 0) + (1 if people else 0))
     risk_penalty = min(
         20,
@@ -46,8 +43,8 @@ def calculate_profile(signals: list[dict], people: list[dict], states: list[dict
         and int(s.get("score") or 0) > 0
     ]
     total = max(0, min(100, sum(scores.values()) + confidence - risk_penalty))
-    quality = "A" if total >= 75 and confidence >= 7 and recent_intent else None
-    if not quality and total >= 60 and confidence >= 6:
+    quality = "A" if total >= QUALITY_A_MIN_SCORE and confidence >= 7 and recent_intent else None
+    if not quality and total >= QUALITY_B_MIN_SCORE and confidence >= QUALITY_MIN_CONFIDENCE:
         quality = "B"
 
     decision_makers = sum(bool(p.get("is_decision_maker")) for p in people)

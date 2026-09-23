@@ -10,6 +10,7 @@ def test_migrations_idempotent():
         + sorted(sql_dir.glob("012_*.sql"))
         + sorted(sql_dir.glob("013_*.sql"))
         + sorted(sql_dir.glob("014_*.sql"))
+        + sorted(sql_dir.glob("016_*.sql"))
     ):
         text = path.read_text(encoding="utf-8")
         assert "IF NOT EXISTS" in text or "CREATE OR REPLACE" in text or "DO $$" in text
@@ -69,3 +70,11 @@ def test_commercial_quality_tables_are_indexed():
         assert f"intelligence.{table}" in text
     assert "idx_commercial_feedback_company_time" in text
     assert "idx_company_people_priority" in text
+
+
+def test_quality_storage_funnel_keeps_only_ab_in_commercial_view():
+    sql_dir = Path(__file__).resolve().parents[1] / "sql"
+    text = (sql_dir / "016_quality_storage_funnel.sql").read_text(encoding="utf-8")
+    assert "etl.candidate_decisions" in text
+    assert "decision IN ('qualified_a', 'qualified_b', 'rejected')" in text
+    assert "p.lead_quality IN ('A', 'B')" in text

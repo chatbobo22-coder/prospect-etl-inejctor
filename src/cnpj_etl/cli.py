@@ -16,6 +16,7 @@ from .ibge_population import ensure_municipios_populacao
 from .intelligence import IntelligenceSettings, run_intelligence, run_intelligence_until_empty
 from .pipeline import run
 from .prospect import promote_qualified
+from .retention import prune_evaluated_candidates
 from .source import RfbSource
 
 
@@ -75,12 +76,15 @@ def main():
     prospect.add_argument("--batch-size", type=int, help="CNPJs por rodada de enriquecimento")
     prospect.add_argument("--force-enrich", action="store_true", help="Reprocessa todos no enrich")
     intelligence = sub.add_parser(
-        "intelligence-pipeline", help="Consulta fontes públicas por lote e atualiza perfis comerciais"
+        "intelligence-pipeline",
+        help="Consulta fontes públicas por lote e atualiza perfis comerciais",
     )
     intelligence.add_argument("--batch-size", type=int, help="Empresas por fonte")
     intelligence.add_argument("--sources", help="Fontes separadas por vírgula")
     intelligence.add_argument("--force", action="store_true", help="Reconsulta mesmo dentro do TTL")
-    intelligence.add_argument("--until-empty", action="store_true", help="Processa até esvaziar a fila")
+    intelligence.add_argument(
+        "--until-empty", action="store_true", help="Processa até esvaziar a fila"
+    )
     rescore = sub.add_parser("rescore-digital", help="Recalcula scores v2 sem HTTP")
     rescore.add_argument("--version", default="v2", help="Versão alvo do score")
     requeue = sub.add_parser("requeue-enrichment", help="Recoloca registros antigos na fila")
@@ -114,6 +118,13 @@ def main():
         )
         logging.info("Ativas only: %s", settings.filter_active_only)
         logging.info("CNAE principal only: %s", not settings.filter_include_secondary_cnae)
+        logging.info("Somente matrizes: %s", settings.filter_headquarters_only)
+        logging.info("E-mail válido obrigatório: %s", settings.filter_require_email)
+        logging.info("E-mail backoffice bloqueado: %s", settings.filter_block_backoffice_email)
+        logging.info(
+            "Limite de candidatos novos por execução: %s",
+            settings.filter_max_candidates_per_run or "desligado",
+        )
         logging.info("Nome fantasia obrigatório: %s", settings.filter_require_nome_fantasia)
         logging.info("Telefone válido obrigatório: %s", settings.filter_require_telefone)
         logging.info(
@@ -153,13 +164,15 @@ def main():
         settings_obj = EnrichSettings(batch_size=batch_size)
         with db.connect() as conn:
             enrich_stats = run_enrichment_until_empty(conn, settings_obj, force=args.force_enrich)
-            intelligence_stats = run_intelligence(conn)
+            intelligence_stats = run_intelligence_until_empty(conn)
             qualify_stats = promote_qualified(conn)
+            retention_stats = prune_evaluated_candidates(conn)
         logging.info(
-            "Pipeline prospect: enrich=%s intelligence=%s qualify=%s",
+            "Pipeline prospect: enrich=%s intelligence=%s qualify=%s retention=%s",
             enrich_stats,
             intelligence_stats,
             qualify_stats,
+            retention_stats,
         )
     elif args.command == "intelligence-pipeline":
         db.migrate(sql_dir)
@@ -200,7 +213,9 @@ def main():
     elif args.command == "migrate-file":
         filename = Path(args.filename).name
         if filename != args.filename or not filename.endswith(".sql"):
-            raise SystemExit("Informe somente o nome de um arquivo .sql do diretório de migrations.")
+            raise SystemExit(
+                "Informe somente o nome de um arquivo .sql do diretório de migrations."
+            )
         migration = sql_dir / filename
         if not migration.is_file():
             raise SystemExit(f"Migration não encontrada: {filename}")
