@@ -10,7 +10,7 @@ from xml.etree import ElementTree as ET
 
 import requests
 from bs4 import BeautifulSoup
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import before_sleep_log, retry, stop_after_attempt, wait_exponential
 
 log = logging.getLogger(__name__)
 
@@ -67,6 +67,14 @@ def parse_nextcloud_share(base_url: str) -> tuple[str, str, str] | None:
     return origin, token, webdav_root
 
 
+def nextcloud_webdav_roots(origin: str, token: str) -> tuple[str, str]:
+    """Return the current Nextcloud DAV route and its legacy compatibility route."""
+    return (
+        f"{origin}/public.php/dav/files/{token}/",
+        f"{origin}/public.php/webdav/",
+    )
+
+
 def competence_from_href(href: str) -> str | None:
     match = COMPETENCE_RE.search(href)
     return match.group(0) if match else None
@@ -99,6 +107,8 @@ class RfbSource:
         parsed = parse_nextcloud_share(base_url)
         if parsed:
             self.origin, self.token, self.webdav_root = parsed
+            self.webdav_roots = nextcloud_webdav_roots(self.origin, self.token)
+            self.active_webdav_root = self.webdav_roots[0]
             self.mode = "nextcloud"
             self.base_url = base_url.rstrip("/")
         else:
@@ -112,17 +122,50 @@ class RfbSource:
         response.raise_for_status()
         return response
 
-    @retry(stop=stop_after_attempt(4), wait=wait_exponential(min=2, max=30), reraise=True)
+    @retry(
+        stop=stop_after_attempt(6),
+        wait=wait_exponential(min=2, max=30),
+        before_sleep=before_sleep_log(log, logging.WARNING),
+        reraise=True,
+    )
     def _propfind(self, url: str) -> str:
-        response = self.session.request(
-            "PROPFIND",
-            url,
-            auth=(self.token, ""),
-            headers={"Depth": "1"},
-            timeout=self.timeout,
+        # The Receita Nextcloud occasionally closes pooled connections from
+        # GitHub-hosted runners. A short-lived connection avoids reusing a
+        # socket that the remote server has already discarded.
+        with requests.Session() as session:
+            session.headers.update(self.session.headers)
+            response = session.request(
+                "PROPFIND",
+                url,
+                auth=(self.token, ""),
+                headers={
+                    "Accept": "application/xml, text/xml;q=0.9, */*;q=0.8",
+                    "Connection": "close",
+                    "Depth": "1",
+                },
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            return response.text
+
+    def _nextcloud_entries(self, path: str = "") -> list[tuple[str, bool]]:
+        last_error: Exception | None = None
+        roots = (self.active_webdav_root,) + tuple(
+            root for root in self.webdav_roots if root != self.active_webdav_root
         )
-        response.raise_for_status()
-        return response.text
+        for root in roots:
+            url = urljoin(root, path)
+            try:
+                entries = entries_from_propfind(self._propfind(url))
+            except (requests.RequestException, ET.ParseError) as exc:
+                last_error = exc
+                log.warning("Rota WebDAV indisponível (%s); tentando alternativa", root)
+                continue
+            self.active_webdav_root = root
+            return entries
+        if last_error:
+            raise last_error
+        raise RuntimeError("Nenhuma rota WebDAV disponível para a fonte da Receita Federal")
 
     def _absolute_url(self, href: str) -> str:
         if href.startswith("http"):
@@ -131,11 +174,10 @@ class RfbSource:
 
     def latest_competence(self) -> str:
         if self.mode == "nextcloud":
-            xml_text = self._propfind(self.webdav_root)
             values = sorted(
                 {
                     competence
-                    for name, is_dir in entries_from_propfind(xml_text)
+                    for name, is_dir in self._nextcloud_entries()
                     if is_dir and (competence := competence_from_href(name))
                 }
             )
@@ -152,20 +194,17 @@ class RfbSource:
 
     def list_files(self, competence: str) -> list[RemoteFile]:
         if self.mode == "nextcloud":
-            release_url = urljoin(self.webdav_root, f"{competence}/")
-            xml_text = self._propfind(release_url)
             result = []
-            for name, is_dir in entries_from_propfind(xml_text):
+            for name, is_dir in self._nextcloud_entries(f"{competence}/"):
                 if is_dir:
                     continue
                 kind = classify(name)
                 if name.lower().endswith(".zip") and kind:
-                    href = f"/public.php/webdav/{competence}/{name}"
                     result.append(
                         RemoteFile(
                             competence,
                             name,
-                            self._absolute_url(href),
+                            urljoin(self.active_webdav_root, f"{competence}/{name}"),
                             kind,
                         )
                     )
