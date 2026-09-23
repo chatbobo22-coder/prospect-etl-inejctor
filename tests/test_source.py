@@ -112,3 +112,17 @@ def test_curl_command_only_authenticates_legacy_route(monkeypatch):
 
     assert "--user" not in current_command
     assert legacy_command[legacy_command.index("--user") + 1] == "share-token:"
+
+
+def test_curl_metadata_skips_redundant_preflight(monkeypatch):
+    source = RfbSource("https://example.test/index.php/s/share-token")
+    monkeypatch.setattr(source, "curl_path", "/usr/bin/curl")
+    remote = source.list_files("2026-09")[0]
+
+    monkeypatch.setattr(
+        source,
+        "_curl_probe",
+        lambda _url: (_ for _ in ()).throw(AssertionError("unexpected preflight")),
+    )
+
+    assert source.metadata(remote) == (None, None)

@@ -340,15 +340,11 @@ class RfbSource:
     @retry(stop=stop_after_attempt(4), wait=wait_exponential(min=2, max=30), reraise=True)
     def metadata(self, remote: RemoteFile) -> tuple[int | None, str | None]:
         if self.curl_path and self.mode == "nextcloud":
-            _, headers = self._curl_probe(remote.url)
-            ranges = re.findall(r"(?im)^content-range:\s*bytes\s+\d+-\d+/(\d+)\s*$", headers)
-            lengths = re.findall(r"(?im)^content-length:\s*(\d+)\s*$", headers)
-            modified_values = re.findall(r"(?im)^last-modified:\s*(.+?)\s*$", headers)
-            size = ranges[-1] if ranges else (lengths[-1] if lengths else "")
-            return (
-                int(size) if size.isdigit() else None,
-                modified_values[-1] if modified_values else None,
-            )
+            # Avoid a redundant preflight request immediately before each
+            # multi-gigabyte download. Receita rate-limits repeated requests
+            # from GitHub-hosted runners. The pipeline records the exact size
+            # and checksum after the download finishes.
+            return None, None
         with self.session.get(
             remote.url,
             timeout=self.timeout,
