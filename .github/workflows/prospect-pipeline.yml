@@ -146,6 +146,7 @@ jobs:
           echo "FILTER_BLOCK_BACKOFFICE_EMAIL=${{ inputs.block_backoffice_email != false }}" >> "$GITHUB_ENV"
           echo "FILTER_MIN_ACTIVITY_MONTHS=${{ inputs.min_activity_months || '12' }}" >> "$GITHUB_ENV"
           echo "FILTER_MIN_POPULATION=${{ inputs.min_population || '0' }}" >> "$GITHUB_ENV"
+          echo "CHUNK_SIZE=5000" >> "$GITHUB_ENV"
           echo "FILTER_CNAE_INCLUDE_SECONDARY=${{ github.event_name == 'schedule' || inputs.include_secondary_cnae == true }}" >> "$GITHUB_ENV"
           echo "IBGE_POPULATION_YEAR=2024" >> "$GITHUB_ENV"
           echo "ENRICH_CANDIDATE_VIEW=cnpj.v_prospect_candidates" >> "$GITHUB_ENV"

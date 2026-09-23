@@ -6,11 +6,14 @@ import logging
 from zipfile import ZipFile
 
 from psycopg import sql
+from psycopg.errors import QueryCanceled
 
 from .filters import should_load_row, track_estabelecimento
 from .schema import DATASETS, DATE_COLUMNS
 
 log = logging.getLogger(__name__)
+
+MIN_RETRY_CHUNK_SIZE = 500
 
 
 def clean(value: str):
@@ -134,6 +137,30 @@ def upsert_chunk(
         )
 
 
+def flush_chunk(
+    conn, table: str, rows: list[dict], conflict: str, *, kind: str = "", label: str = ""
+):
+    """Persist a batch and shrink it automatically when Postgres times out."""
+    try:
+        upsert_chunk(conn, table, rows, conflict, kind=kind, label=label)
+        conn.commit()
+    except QueryCanceled:
+        conn.rollback()
+        if len(rows) <= MIN_RETRY_CHUNK_SIZE:
+            raise
+        middle = len(rows) // 2
+        log.warning(
+            "%s → cnpj.%s: timeout no lote de %s; repetindo em lotes de %s e %s",
+            label or kind,
+            table,
+            len(rows),
+            middle,
+            len(rows) - middle,
+        )
+        flush_chunk(conn, table, rows[:middle], conflict, kind=kind, label=label)
+        flush_chunk(conn, table, rows[middle:], conflict, kind=kind, label=label)
+
+
 def load_zip(
     conn,
     zip_path,
@@ -179,8 +206,7 @@ def load_zip(
                         track_estabelecimento(item, filter_ctx)
                     chunk.append(item)
                     if len(chunk) >= chunk_size:
-                        upsert_chunk(conn, table, chunk, conflict, kind=kind, label=display_name)
-                        conn.commit()
+                        flush_chunk(conn, table, chunk, conflict, kind=kind, label=display_name)
                         count += len(chunk)
                         chunk.clear()
                 if scanned % log_progress_every == 0:
@@ -195,8 +221,7 @@ def load_zip(
                         pct,
                     )
             if chunk:
-                upsert_chunk(conn, table, chunk, conflict, kind=kind, label=display_name)
-                conn.commit()
+                flush_chunk(conn, table, chunk, conflict, kind=kind, label=display_name)
                 count += len(chunk)
     log.info(
         "%s: concluído — lidas=%s gravadas=%s ignoradas=%s empresas_unicas=%s",

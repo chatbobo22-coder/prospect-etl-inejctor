@@ -95,7 +95,7 @@ class Settings:
         "https://dados-abertos-rf-cnpj.casadosdados.com.br/arquivos/",
     )
     data_dir: Path = Path(os.getenv("DATA_DIR", "./data"))
-    chunk_size: int = int(os.getenv("CHUNK_SIZE", "25000"))
+    chunk_size: int = int(os.getenv("CHUNK_SIZE", "5000"))
     log_progress_every: int = int(os.getenv("LOG_PROGRESS_EVERY", "50000"))
     download_chunk_bytes: int = int(os.getenv("DOWNLOAD_CHUNK_BYTES", "1048576"))
     timeout: int = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "120"))
