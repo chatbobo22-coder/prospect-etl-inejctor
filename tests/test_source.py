@@ -4,6 +4,7 @@ import requests
 
 from cnpj_etl.source import (
     EXPECTED_FILE_NAMES,
+    RemoteFile,
     RfbSource,
     competence_from_href,
     nextcloud_webdav_roots,
@@ -79,6 +80,44 @@ def test_latest_competence_uses_current_month_without_preflight(monkeypatch):
     assert source.latest_competence() == "2026-09"
 
 
+def test_mirror_uses_latest_snapshot_for_same_competence(monkeypatch):
+    source = RfbSource(
+        "https://example.test/index.php/s/share-token",
+        mirror_url="https://cdn.example.test/arquivos/",
+    )
+
+    class Response:
+        text = """
+        <a href="2026-08-09/">2026-08-09</a>
+        <a href="2026-09-14/">2026-09-14</a>
+        <a href="2026-09-18/">2026-09-18</a>
+        """
+
+    monkeypatch.setattr(source, "_get", lambda _url: Response())
+
+    files = source.list_files("2026-09")
+
+    assert source._mirror_snapshot("2026-09") == "2026-09-18"
+    assert files[0].url == "https://cdn.example.test/arquivos/2026-09-18/Cnaes.zip"
+
+
+def test_mirror_never_falls_back_to_an_older_competence(monkeypatch):
+    source = RfbSource(
+        "https://example.test/index.php/s/share-token",
+        mirror_url="https://cdn.example.test/arquivos/",
+    )
+
+    class Response:
+        text = '<a href="2026-08-09/">2026-08-09</a>'
+
+    monkeypatch.setattr(source, "_get", lambda _url: Response())
+
+    files = source.list_files("2026-09")
+
+    assert source._mirror_snapshot("2026-09") is None
+    assert files[0].url.endswith("/2026-09/Cnaes.zip")
+
+
 def test_nextcloud_file_list_uses_official_37_file_contract():
     source = RfbSource("https://example.test/index.php/s/share-token")
     files = source.list_files("2026-09")
@@ -146,4 +185,36 @@ def test_curl_download_requests_complete_byte_range(monkeypatch, tmp_path):
 
     range_index = observed["command"].index("--range")
     assert observed["command"][range_index + 1] == "0-999999999999"
+    assert "--progress-bar" in observed["command"]
+
+
+def test_curl_download_does_not_force_range_on_mirror(monkeypatch, tmp_path):
+    source = RfbSource(
+        "https://example.test/index.php/s/share-token",
+        mirror_url="https://cdn.example.test/arquivos/",
+    )
+    monkeypatch.setattr(source, "curl_path", "/usr/bin/curl")
+    remote = RemoteFile(
+        "2026-09",
+        "Cnaes.zip",
+        "https://cdn.example.test/arquivos/2026-09-18/Cnaes.zip",
+        "Cnaes",
+    )
+    observed = {}
+
+    class FakeResult:
+        returncode = 0
+
+    def fake_run(command, **_kwargs):
+        observed["command"] = command
+        destination = command[command.index("--output") + 1]
+        with open(destination, "wb") as output:
+            output.write(b"zip-content")
+        return FakeResult()
+
+    monkeypatch.setattr("cnpj_etl.source.subprocess.run", fake_run)
+
+    source._download_with_curl(remote, str(tmp_path / "download.zip"), 1024)
+
+    assert "--range" not in observed["command"]
     assert "--progress-bar" in observed["command"]

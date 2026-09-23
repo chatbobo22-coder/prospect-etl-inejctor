@@ -212,5 +212,5 @@ A view `cnpj.v_prospectos_outreach_v3` entrega somente os leads aprovados A/B.
 
 ## Fonte
 
-O projeto utiliza os arquivos públicos da Receita Federal via **Nextcloud** (`arquivos.receitafederal.gov.br/index.php/s/YggdBLfdninEJX9`), com fallback para o diretório HTML legado se `RFB_BASE_URL` apontar para a URL antiga. Confira o leiaute oficial antes de alterações futuras, pois a Receita pode mudar nomes ou colunas.
+O projeto usa os arquivos públicos da Receita Federal como fonte oficial. Por padrão, os ZIPs são transportados pela CDN configurada em `RFB_DOWNLOAD_MIRROR_URL`, pois o Nextcloud oficial encerra downloads longos originados de alguns runners do GitHub. O injetor só aceita um snapshot do mesmo mês solicitado e nunca retrocede silenciosamente para uma competência anterior. Para desativar a CDN, defina `RFB_DOWNLOAD_MIRROR_URL` como vazio. Confira o leiaute oficial antes de alterações futuras, pois a Receita pode mudar nomes ou colunas.
 

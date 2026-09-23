@@ -68,6 +68,7 @@ TYPE_PATTERNS = {
 
 NEXTCLOUD_SHARE_RE = re.compile(r"^(?P<origin>https?://[^/]+)/index\.php/s/(?P<token>[^/?#]+)")
 COMPETENCE_RE = re.compile(r"(20\d{2})-(0[1-9]|1[0-2])")
+SNAPSHOT_RE = re.compile(r"(20\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])")
 WEBDAV_NS = {"d": "DAV:"}
 
 
@@ -131,11 +132,13 @@ def entries_from_propfind(xml_text: str) -> list[tuple[str, bool]]:
 
 
 class RfbSource:
-    def __init__(self, base_url: str, timeout: int = 120):
+    def __init__(self, base_url: str, timeout: int = 120, mirror_url: str = ""):
         self.timeout = timeout
         self.curl_path = shutil.which("curl")
         self.session = requests.Session()
         self.session.headers["User-Agent"] = "cnpj-etl/1.0 (dados-abertos)"
+        self.mirror_url = mirror_url.rstrip("/") + "/" if mirror_url.strip() else ""
+        self._mirror_snapshots: dict[str, str] | None = None
         parsed = parse_nextcloud_share(base_url)
         if parsed:
             self.origin, self.token, self.webdav_root = parsed
@@ -204,6 +207,34 @@ class RfbSource:
 
     def _remote_url(self, competence: str, name: str) -> str:
         return urljoin(self.active_webdav_root, f"{competence}/{name}")
+
+    def _load_mirror_snapshots(self) -> dict[str, str]:
+        if self._mirror_snapshots is not None:
+            return self._mirror_snapshots
+        snapshots: dict[str, str] = {}
+        if not self.mirror_url:
+            self._mirror_snapshots = snapshots
+            return snapshots
+        try:
+            soup = BeautifulSoup(self._get(self.mirror_url).text, "html.parser")
+            folders = []
+            for anchor in soup.select("a[href]"):
+                folder = anchor.get("href", "").strip("/")
+                if SNAPSHOT_RE.fullmatch(folder):
+                    folders.append(folder)
+            for folder in sorted(folders):
+                # If the mirror republishes a month, prefer the newest snapshot.
+                snapshots[folder[:7]] = folder
+        except requests.RequestException as exc:
+            log.warning("CDN alternativa indisponível; usando servidor oficial: %s", exc)
+        self._mirror_snapshots = snapshots
+        return snapshots
+
+    def _mirror_snapshot(self, competence: str) -> str | None:
+        return self._load_mirror_snapshots().get(competence)
+
+    def _is_official_nextcloud_url(self, url: str) -> bool:
+        return self.mode == "nextcloud" and bool(self.origin) and url.startswith(self.origin + "/")
 
     def _auth_for_url(self, url: str) -> tuple[str, str] | None:
         # Nextcloud 29+ public DAV links do not require authentication when the
@@ -303,7 +334,15 @@ class RfbSource:
             # availability check. Operators can still pass --competence when a
             # previous month needs to be selected explicitly.
             competence = recent_competences(months=1)[0]
-            log.info("Competência automática pelo mês corrente: %s", competence)
+            snapshot = self._mirror_snapshot(competence)
+            if snapshot:
+                log.info(
+                    "Competência %s disponível na CDN de transporte (snapshot %s)",
+                    competence,
+                    snapshot,
+                )
+            else:
+                log.info("Competência automática pelo mês corrente: %s", competence)
             return competence
         else:
             soup = BeautifulSoup(self._get(self.base_url).text, "html.parser")
@@ -321,10 +360,24 @@ class RfbSource:
             # The official CNPJ export has a stable 37-file contract. Building
             # the list locally avoids PROPFIND, which is blocked intermittently
             # for GitHub Actions even though normal GET downloads work.
-            result = [
-                RemoteFile(competence, name, self._remote_url(competence, name), classify(name))
-                for name in EXPECTED_FILE_NAMES
-            ]
+            snapshot = self._mirror_snapshot(competence)
+            if snapshot:
+                transport_root = urljoin(self.mirror_url, snapshot + "/")
+                log.info(
+                    "Receita Federal = fonte oficial; CDN = transporte dos ZIPs (%s)", snapshot
+                )
+                result = [
+                    RemoteFile(competence, name, urljoin(transport_root, name), classify(name))
+                    for name in EXPECTED_FILE_NAMES
+                ]
+            else:
+                log.warning(
+                    "CDN sem snapshot da competência %s; usando transporte oficial", competence
+                )
+                result = [
+                    RemoteFile(competence, name, self._remote_url(competence, name), classify(name))
+                    for name in EXPECTED_FILE_NAMES
+                ]
         else:
             page = urljoin(self.base_url, competence + "/")
             soup = BeautifulSoup(self._get(page).text, "html.parser")
@@ -340,7 +393,7 @@ class RfbSource:
 
     @retry(stop=stop_after_attempt(4), wait=wait_exponential(min=2, max=30), reraise=True)
     def metadata(self, remote: RemoteFile) -> tuple[int | None, str | None]:
-        if self.curl_path and self.mode == "nextcloud":
+        if self.curl_path and self._is_official_nextcloud_url(remote.url):
             # Avoid a redundant preflight request immediately before each
             # multi-gigabyte download. Receita rate-limits repeated requests
             # from GitHub-hosted runners. The pipeline records the exact size
@@ -374,18 +427,16 @@ class RfbSource:
         self, remote: RemoteFile, destination: str, chunk_bytes: int
     ) -> tuple[str, int]:
         command = self._curl_command(remote.url)
-        # Receita accepts finite ranged downloads from GitHub-hosted runners
+        # Receita accepts finite ranged downloads from some GitHub-hosted runners
         # but may close an otherwise identical plain or open-ended GET. The
         # upper bound is intentionally larger than every CNPJ ZIP; HTTP stops
         # naturally at the real EOF, so the complete file is transferred.
         command.remove("--silent")
-        command[-1:-1] = [
-            "--progress-bar",
-            "--range",
-            "0-999999999999",
-            "--output",
-            destination,
-        ]
+        download_options = ["--progress-bar"]
+        if self._is_official_nextcloud_url(remote.url):
+            download_options.extend(("--range", "0-999999999999"))
+        download_options.extend(("--output", destination))
+        command[-1:-1] = download_options
         completed = subprocess.run(
             command,
             check=False,

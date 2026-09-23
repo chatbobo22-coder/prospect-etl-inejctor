@@ -39,6 +39,7 @@ jobs:
           source = RfbSource(
               "https://arquivos.receitafederal.gov.br/index.php/s/YggdBLfdninEJX9",
               timeout=30,
+              mirror_url="https://dados-abertos-rf-cnpj.casadosdados.com.br/arquivos/",
           )
           competence = source.latest_competence()
           files = source.list_files(competence)

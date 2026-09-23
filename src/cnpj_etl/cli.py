@@ -213,7 +213,7 @@ def main():
         run(
             settings,
             db,
-            RfbSource(settings.base_url, settings.timeout),
+            RfbSource(settings.base_url, settings.timeout, settings.mirror_url),
             args.competence,
             args.force,
             args.auto,

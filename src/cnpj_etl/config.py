@@ -90,6 +90,10 @@ class Settings:
         "RFB_BASE_URL",
         "https://arquivos.receitafederal.gov.br/index.php/s/YggdBLfdninEJX9",
     )
+    mirror_url: str = os.getenv(
+        "RFB_DOWNLOAD_MIRROR_URL",
+        "https://dados-abertos-rf-cnpj.casadosdados.com.br/arquivos/",
+    )
     data_dir: Path = Path(os.getenv("DATA_DIR", "./data"))
     chunk_size: int = int(os.getenv("CHUNK_SIZE", "25000"))
     log_progress_every: int = int(os.getenv("LOG_PROGRESS_EVERY", "50000"))
