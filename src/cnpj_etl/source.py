@@ -4,6 +4,7 @@ import os
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import date
 import re
 from urllib.parse import urljoin
 from xml.etree import ElementTree as ET
@@ -15,6 +16,21 @@ from tenacity import before_sleep_log, retry, stop_after_attempt, wait_exponenti
 log = logging.getLogger(__name__)
 
 DOWNLOAD_LOG_EVERY_BYTES = 100 * 1024 * 1024  # 100 MB
+REFERENCE_FILE_NAMES = (
+    "Cnaes.zip",
+    "Motivos.zip",
+    "Municipios.zip",
+    "Naturezas.zip",
+    "Paises.zip",
+    "Qualificacoes.zip",
+    "Simples.zip",
+)
+PARTITIONED_FILE_NAMES = tuple(
+    f"{kind}{part}.zip"
+    for kind in ("Empresas", "Estabelecimentos", "Socios")
+    for part in range(10)
+)
+EXPECTED_FILE_NAMES = REFERENCE_FILE_NAMES + PARTITIONED_FILE_NAMES
 
 
 def fmt_bytes(num: int) -> str:
@@ -75,6 +91,19 @@ def nextcloud_webdav_roots(origin: str, token: str) -> tuple[str, str]:
     )
 
 
+def recent_competences(today: date | None = None, months: int = 6) -> list[str]:
+    current = today or date.today()
+    year, month = current.year, current.month
+    result = []
+    for _ in range(months):
+        result.append(f"{year:04d}-{month:02d}")
+        month -= 1
+        if month == 0:
+            year -= 1
+            month = 12
+    return result
+
+
 def competence_from_href(href: str) -> str | None:
     match = COMPETENCE_RE.search(href)
     return match.group(0) if match else None
@@ -118,7 +147,10 @@ class RfbSource:
 
     @retry(stop=stop_after_attempt(4), wait=wait_exponential(min=2, max=30), reraise=True)
     def _get(self, url: str, *, stream: bool = False, auth: tuple[str, str] | None = None):
-        response = self.session.get(url, timeout=self.timeout, stream=stream, auth=auth)
+        headers = {"Connection": "close"} if stream else None
+        response = self.session.get(
+            url, timeout=self.timeout, stream=stream, auth=auth, headers=headers
+        )
         response.raise_for_status()
         return response
 
@@ -167,6 +199,35 @@ class RfbSource:
             raise last_error
         raise RuntimeError("Nenhuma rota WebDAV disponível para a fonte da Receita Federal")
 
+    def _remote_url(self, competence: str, name: str) -> str:
+        return urljoin(self.active_webdav_root, f"{competence}/{name}")
+
+    @retry(
+        stop=stop_after_attempt(4),
+        wait=wait_exponential(min=2, max=15),
+        before_sleep=before_sleep_log(log, logging.WARNING),
+        reraise=True,
+    )
+    def _file_exists(self, url: str) -> bool:
+        # GET is intentionally used instead of PROPFIND/HEAD. The Receita
+        # closes those methods for some GitHub-hosted runner addresses while
+        # allowing ordinary file downloads.
+        with self.session.get(
+            url,
+            auth=(self.token, ""),
+            headers={
+                "Accept": "application/zip",
+                "Connection": "close",
+                "Range": "bytes=0-0",
+            },
+            stream=True,
+            timeout=self.timeout,
+        ) as response:
+            if response.status_code == 404:
+                return False
+            response.raise_for_status()
+            return True
+
     def _absolute_url(self, href: str) -> str:
         if href.startswith("http"):
             return href
@@ -174,12 +235,12 @@ class RfbSource:
 
     def latest_competence(self) -> str:
         if self.mode == "nextcloud":
-            values = sorted(
-                {
-                    competence
-                    for name, is_dir in self._nextcloud_entries()
-                    if is_dir and (competence := competence_from_href(name))
-                }
+            for competence in recent_competences():
+                if self._file_exists(self._remote_url(competence, "Cnaes.zip")):
+                    log.info("Competência mais recente confirmada por HTTP GET: %s", competence)
+                    return competence
+            raise RuntimeError(
+                "Nenhuma competência recente da Receita Federal respondeu por HTTP GET"
             )
         else:
             soup = BeautifulSoup(self._get(self.base_url).text, "html.parser")
@@ -194,20 +255,13 @@ class RfbSource:
 
     def list_files(self, competence: str) -> list[RemoteFile]:
         if self.mode == "nextcloud":
-            result = []
-            for name, is_dir in self._nextcloud_entries(f"{competence}/"):
-                if is_dir:
-                    continue
-                kind = classify(name)
-                if name.lower().endswith(".zip") and kind:
-                    result.append(
-                        RemoteFile(
-                            competence,
-                            name,
-                            urljoin(self.active_webdav_root, f"{competence}/{name}"),
-                            kind,
-                        )
-                    )
+            # The official CNPJ export has a stable 37-file contract. Building
+            # the list locally avoids PROPFIND, which is blocked intermittently
+            # for GitHub Actions even though normal GET downloads work.
+            result = [
+                RemoteFile(competence, name, self._remote_url(competence, name), classify(name))
+                for name in EXPECTED_FILE_NAMES
+            ]
         else:
             page = urljoin(self.base_url, competence + "/")
             soup = BeautifulSoup(self._get(page).text, "html.parser")
@@ -224,15 +278,23 @@ class RfbSource:
     @retry(stop=stop_after_attempt(4), wait=wait_exponential(min=2, max=30), reraise=True)
     def metadata(self, remote: RemoteFile) -> tuple[int | None, str | None]:
         auth = (self.token, "") if self.mode == "nextcloud" else None
-        response = self.session.head(
-            remote.url, timeout=self.timeout, allow_redirects=True, auth=auth
-        )
-        response.raise_for_status()
-        size = response.headers.get("Content-Length")
-        return (
-            int(size) if size and size.isdigit() else None,
-            response.headers.get("Last-Modified"),
-        )
+        with self.session.get(
+            remote.url,
+            timeout=self.timeout,
+            stream=True,
+            allow_redirects=True,
+            auth=auth,
+            headers={"Connection": "close", "Range": "bytes=0-0"},
+        ) as response:
+            response.raise_for_status()
+            content_range = response.headers.get("Content-Range", "")
+            range_total = content_range.rsplit("/", 1)[-1] if "/" in content_range else ""
+            content_length = response.headers.get("Content-Length", "")
+            size = range_total if range_total.isdigit() else content_length
+            return (
+                int(size) if size.isdigit() else None,
+                response.headers.get("Last-Modified"),
+            )
 
     def _download_to_path(
         self, remote: RemoteFile, destination: str, chunk_bytes: int

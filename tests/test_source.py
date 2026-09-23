@@ -1,6 +1,15 @@
+from datetime import date
+
 import requests
 
-from cnpj_etl.source import RfbSource, competence_from_href, nextcloud_webdav_roots, parse_nextcloud_share
+from cnpj_etl.source import (
+    EXPECTED_FILE_NAMES,
+    RfbSource,
+    competence_from_href,
+    nextcloud_webdav_roots,
+    parse_nextcloud_share,
+    recent_competences,
+)
 
 
 def test_parse_nextcloud_share():
@@ -41,9 +50,45 @@ def test_nextcloud_entries_falls_back_to_legacy_route(monkeypatch):
 
     monkeypatch.setattr(source, "_propfind", fake_propfind)
 
-    assert source.latest_competence() == "2026-09"
+    assert source._nextcloud_entries() == [("2026-09", True)]
     assert calls == [
         "https://example.test/public.php/dav/files/share-token/",
         "https://example.test/public.php/webdav/",
     ]
     assert source.active_webdav_root == "https://example.test/public.php/webdav/"
+
+
+def test_recent_competences_crosses_year_boundary():
+    assert recent_competences(date(2026, 2, 3), months=4) == [
+        "2026-02",
+        "2026-01",
+        "2025-12",
+        "2025-11",
+    ]
+
+
+def test_latest_competence_uses_regular_file_get(monkeypatch):
+    source = RfbSource("https://example.test/index.php/s/share-token")
+    probes = []
+
+    def fake_exists(url):
+        probes.append(url)
+        return "/2026-08/" in url
+
+    monkeypatch.setattr("cnpj_etl.source.recent_competences", lambda: ["2026-09", "2026-08"])
+    monkeypatch.setattr(source, "_file_exists", fake_exists)
+
+    assert source.latest_competence() == "2026-08"
+    assert len(probes) == 2
+    assert all("Cnaes.zip" in url for url in probes)
+
+
+def test_nextcloud_file_list_uses_official_37_file_contract():
+    source = RfbSource("https://example.test/index.php/s/share-token")
+    files = source.list_files("2026-09")
+
+    assert len(EXPECTED_FILE_NAMES) == 37
+    assert len(files) == 37
+    assert files[0].name == "Cnaes.zip"
+    assert files[-1].name == "Socios9.zip"
+    assert all(file.file_type for file in files)
