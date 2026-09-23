@@ -150,4 +150,4 @@ def test_curl_download_requests_complete_byte_range(monkeypatch, tmp_path):
     source._download_with_curl(remote, str(tmp_path / "download.zip"), 1024)
 
     range_index = observed["command"].index("--range")
-    assert observed["command"][range_index + 1] == "0-"
+    assert observed["command"][range_index + 1] == "0-999999999999"
