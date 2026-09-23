@@ -1,4 +1,4 @@
-from app import _sanitize_log_lines, _workflow_progress
+from app import _runtime_log_lines, _sanitize_log_lines, _workflow_progress
 
 
 def test_workflow_progress_tracks_steps_without_reaching_100_early():
@@ -23,3 +23,57 @@ def test_runtime_logs_redact_database_and_secret_values():
     assert "user:pass" not in joined
     assert "Processando arquivo 1" in joined
 
+
+def test_runtime_logs_finish_with_current_state_and_detailed_telemetry():
+    run = {
+        "status": "in_progress",
+        "updated_at": "2026-09-23T15:00:00Z",
+    }
+    steps = [{"name": "Run ETL", "status": "in_progress"}]
+    telemetry = {
+        "etl_run": {
+            "competence": "2026-08",
+            "status": "running",
+            "files_processed": 2,
+            "files_total": 10,
+            "rows_processed": 1234,
+        },
+        "files": [
+            {
+                "name": "Estabelecimentos0.zip",
+                "type": "Estabelecimentos",
+                "status": "processing",
+                "rows": 321,
+                "bytes": 2048,
+            }
+        ],
+        "counts": {"companies": 100, "enriched": 40, "qualified": 12},
+        "storage": {"database_bytes": 4096, "schemas": {"cnpj": 2048}},
+    }
+
+    lines = _runtime_log_lines(run, steps, telemetry, ["linha bruta"])
+
+    assert any("[ARQUIVO:PROCESSING]" in line and "linhas=321" in line for line in lines)
+    assert any("[ETL]" in line and "arquivos=2/10" in line for line in lines)
+    assert any("qualificadas A/B=12" in line for line in lines)
+    assert lines[-1].startswith("[AGORA] Run ETL")
+
+
+def test_runtime_telemetry_errors_are_redacted():
+    lines = _runtime_log_lines(
+        {"status": "completed", "updated_at": "2026-09-23T15:00:00Z"},
+        [],
+        {
+            "etl_run": {
+                "status": "failed",
+                "error": "DATABASE_URL=postgresql://user:pass@example.test/db",
+            },
+            "counts": {},
+            "storage": {},
+        },
+        [],
+    )
+
+    joined = "\n".join(lines)
+    assert "user:pass" not in joined
+    assert "DATABASE_URL=***" in joined

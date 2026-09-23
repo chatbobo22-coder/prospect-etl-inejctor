@@ -165,7 +165,7 @@ def _workflow_progress(status: str, steps: list[dict[str, Any]]) -> int:
     return max(1, min(99, round(progress)))
 
 
-def _sanitize_log_lines(raw: str, limit: int = 160) -> list[str]:
+def _sanitize_log_lines(raw: str, limit: int = 500) -> list[str]:
     cleaned: list[str] = []
     ansi = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
     secret = re.compile(
@@ -179,6 +179,91 @@ def _sanitize_log_lines(raw: str, limit: int = 160) -> list[str]:
         if line:
             cleaned.append(line[-1200:])
     return cleaned[-limit:]
+
+
+def _format_runtime_bytes(value: int | None) -> str:
+    size = float(value or 0)
+    units = ("B", "KB", "MB", "GB", "TB")
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+        size /= 1024
+    return f"{int(value or 0)} B"
+
+
+def _runtime_log_lines(
+    run: dict[str, Any],
+    steps: list[dict[str, Any]],
+    telemetry: dict[str, Any],
+    github_lines: list[str],
+) -> list[str]:
+    """Combina log bruto e telemetria em um fluxo legível, com o estado atual no fim."""
+    lines = list(github_lines)
+    if not lines:
+        lines.extend(
+            f"[{step['status'].upper()}] {step['name']}"
+            for step in steps
+            if step["status"] in {"completed", "in_progress"}
+        )
+
+    for item in reversed(telemetry.get("files", [])):
+        timestamp = item.get("processed_at") or item.get("downloaded_at") or ""
+        details = [
+            f"tipo={item.get('type') or 'não informado'}",
+            f"linhas={int(item.get('rows') or 0):,}",
+        ]
+        if item.get("bytes"):
+            details.append(f"tamanho={_format_runtime_bytes(item['bytes'])}")
+        if item.get("error"):
+            details.append(f"erro={item['error']}")
+        lines.append(
+            f"{timestamp} [ARQUIVO:{str(item.get('status') or 'pending').upper()}] "
+            f"{item.get('name') or 'arquivo'} | {' | '.join(details)}"
+        )
+
+    etl_run = telemetry.get("etl_run")
+    if etl_run:
+        lines.append(
+            "[ETL] "
+            f"competência={etl_run.get('competence') or 'automática'} | "
+            f"status={etl_run.get('status') or 'aguardando'} | "
+            f"arquivos={int(etl_run.get('files_processed') or 0)}/"
+            f"{int(etl_run.get('files_total') or 0)} | "
+            f"linhas={int(etl_run.get('rows_processed') or 0):,}"
+        )
+        if etl_run.get("error"):
+            lines.append(f"[ERRO:ETL] {etl_run['error']}")
+
+    counts = telemetry.get("counts") or {}
+    lines.append(
+        "[BASE] "
+        f"empresas={int(counts.get('companies') or 0):,} | "
+        f"enriquecidas={int(counts.get('enriched') or 0):,} | "
+        f"qualificadas A/B={int(counts.get('qualified') or 0):,}"
+    )
+
+    storage = telemetry.get("storage") or {}
+    schema_parts = [
+        f"{name}={_format_runtime_bytes(size)}"
+        for name, size in sorted((storage.get("schemas") or {}).items())
+    ]
+    storage_line = f"[ARMAZENAMENTO] banco={_format_runtime_bytes(storage.get('database_bytes'))}"
+    if schema_parts:
+        storage_line += " | " + " | ".join(schema_parts)
+    lines.append(storage_line)
+
+    if telemetry.get("warning"):
+        lines.append(f"[AVISO] {telemetry['warning']}")
+
+    current_step = next(
+        (step["name"] for step in steps if step["status"] == "in_progress"),
+        "Concluído" if run.get("status") == "completed" else "Aguardando executor",
+    )
+    lines.append(
+        f"[AGORA] {current_step} | execução={run.get('status') or 'desconhecido'} | "
+        f"atualizado={run.get('updated_at') or ''}"
+    )
+    return _sanitize_log_lines("\n".join(lines), limit=500)
 
 
 def _github_run(run_id: int) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
@@ -479,21 +564,7 @@ def workflow_run_detail(run_id: int):
             "counts": {"companies": 0, "enriched": 0, "qualified": 0},
             "warning": "Telemetria do banco temporariamente indisponível",
         }
-    database_logs = []
-    for item in reversed(telemetry.get("files", [])):
-        timestamp = item.get("processed_at") or item.get("downloaded_at") or ""
-        message = (
-            f"{timestamp} [{item['status'].upper()}] {item['name']} — "
-            f"{item['rows']:,} linhas"
-        )
-        database_logs.append(message)
-    if not log_lines:
-        log_lines = [
-            f"[{step['status'].upper()}] {step['name']}"
-            for step in steps
-            if step["status"] in {"completed", "in_progress"}
-        ]
-    log_lines = (log_lines + database_logs)[-160:]
+    log_lines = _runtime_log_lines(run, steps, telemetry, log_lines)
     return {
         "run": {
             "id": run["id"],
