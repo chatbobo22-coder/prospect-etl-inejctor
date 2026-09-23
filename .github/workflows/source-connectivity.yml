@@ -62,11 +62,12 @@ jobs:
       - name: Verify Receita source without loading data
         run: |
           python - <<'PY'
-          from cnpj_etl.config import Settings
           from cnpj_etl.source import RfbSource
 
-          settings = Settings()
-          source = RfbSource(settings.base_url, timeout=30)
+          source = RfbSource(
+              "https://arquivos.receitafederal.gov.br/index.php/s/YggdBLfdninEJX9",
+              timeout=30,
+          )
           competence = source.latest_competence()
           files = source.list_files(competence)
           size, modified = source.metadata(files[0])
