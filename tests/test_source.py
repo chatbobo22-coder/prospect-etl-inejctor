@@ -92,3 +92,11 @@ def test_nextcloud_file_list_uses_official_37_file_contract():
     assert files[0].name == "Cnaes.zip"
     assert files[-1].name == "Socios9.zip"
     assert all(file.file_type for file in files)
+
+
+def test_current_public_dav_route_does_not_send_basic_auth():
+    source = RfbSource("https://example.test/index.php/s/share-token")
+    current, legacy = source.webdav_roots
+
+    assert source._auth_for_url(current + "2026-09/Cnaes.zip") is None
+    assert source._auth_for_url(legacy + "2026-09/Cnaes.zip") == ("share-token", "")

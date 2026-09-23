@@ -202,6 +202,15 @@ class RfbSource:
     def _remote_url(self, competence: str, name: str) -> str:
         return urljoin(self.active_webdav_root, f"{competence}/{name}")
 
+    def _auth_for_url(self, url: str) -> tuple[str, str] | None:
+        # Nextcloud 29+ public DAV links do not require authentication when the
+        # share itself has no password. Sending the share token as Basic auth is
+        # tolerated on some networks, but Receita closes those requests from
+        # GitHub-hosted runners. The legacy endpoint still needs the token.
+        if self.mode == "nextcloud" and "/public.php/webdav/" in url:
+            return self.token, ""
+        return None
+
     @retry(
         stop=stop_after_attempt(4),
         wait=wait_exponential(min=2, max=15),
@@ -214,7 +223,7 @@ class RfbSource:
         # allowing ordinary file downloads.
         with self.session.get(
             url,
-            auth=(self.token, ""),
+            auth=self._auth_for_url(url),
             headers={
                 "Accept": "application/zip",
                 "Connection": "close",
@@ -277,13 +286,12 @@ class RfbSource:
 
     @retry(stop=stop_after_attempt(4), wait=wait_exponential(min=2, max=30), reraise=True)
     def metadata(self, remote: RemoteFile) -> tuple[int | None, str | None]:
-        auth = (self.token, "") if self.mode == "nextcloud" else None
         with self.session.get(
             remote.url,
             timeout=self.timeout,
             stream=True,
             allow_redirects=True,
-            auth=auth,
+            auth=self._auth_for_url(remote.url),
             headers={"Connection": "close", "Range": "bytes=0-0"},
         ) as response:
             response.raise_for_status()
@@ -301,10 +309,9 @@ class RfbSource:
     ) -> tuple[str, int]:
         digest, size = hashlib.sha256(), 0
         last_logged = 0
-        auth = (self.token, "") if self.mode == "nextcloud" else None
         log.info("Download iniciado: %s", remote.name)
         with (
-            self._get(remote.url, stream=True, auth=auth) as response,
+            self._get(remote.url, stream=True, auth=self._auth_for_url(remote.url)) as response,
             open(destination, "wb") as output,
         ):
             expected = response.headers.get("Content-Length")

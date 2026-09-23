@@ -1,0 +1,47 @@
+name: Source Connectivity
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/cnpj_etl/source.py"
+      - "tests/test_source.py"
+      - ".github/workflows/source-connectivity.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  receita:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install .
+
+      - name: Verify Receita source without loading data
+        run: |
+          python - <<'PY'
+          from cnpj_etl.config import Settings
+          from cnpj_etl.source import RfbSource
+
+          settings = Settings()
+          source = RfbSource(settings.base_url, timeout=30)
+          competence = source.latest_competence()
+          files = source.list_files(competence)
+          size, modified = source.metadata(files[0])
+          print(
+              f"source_ok competence={competence} files={len(files)} "
+              f"first_size={size} modified={modified}"
+          )
+          PY
