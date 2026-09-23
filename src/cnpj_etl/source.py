@@ -1,6 +1,8 @@
 import hashlib
 import logging
 import os
+import shutil
+import subprocess
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -131,6 +133,7 @@ def entries_from_propfind(xml_text: str) -> list[tuple[str, bool]]:
 class RfbSource:
     def __init__(self, base_url: str, timeout: int = 120):
         self.timeout = timeout
+        self.curl_path = shutil.which("curl")
         self.session = requests.Session()
         self.session.headers["User-Agent"] = "cnpj-etl/1.0 (dados-abertos)"
         parsed = parse_nextcloud_share(base_url)
@@ -211,6 +214,53 @@ class RfbSource:
             return self.token, ""
         return None
 
+    def _curl_command(self, url: str) -> list[str]:
+        if not self.curl_path:
+            raise RuntimeError("curl não encontrado no ambiente de execução")
+        command = [
+            self.curl_path,
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--location",
+            "--connect-timeout",
+            "30",
+        ]
+        auth = self._auth_for_url(url)
+        if auth:
+            command.extend(("--user", f"{auth[0]}:{auth[1]}"))
+        command.append(url)
+        return command
+
+    def _curl_probe(self, url: str) -> tuple[int, str]:
+        command = self._curl_command(url)
+        command[-1:-1] = [
+            "--max-time",
+            str(self.timeout),
+            "--range",
+            "0-0",
+            "--dump-header",
+            "-",
+            "--output",
+            os.devnull,
+            "--write-out",
+            "\n__HTTP_STATUS__%{http_code}",
+        ]
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        statuses = re.findall(r"__HTTP_STATUS__(\d{3})", completed.stdout)
+        status = int(statuses[-1]) if statuses else 0
+        if completed.returncode and status != 404:
+            detail = completed.stderr.strip() or f"curl encerrou com código {completed.returncode}"
+            raise requests.ConnectionError(detail)
+        return status, completed.stdout
+
     @retry(
         stop=stop_after_attempt(4),
         wait=wait_exponential(min=2, max=15),
@@ -221,6 +271,9 @@ class RfbSource:
         # GET is intentionally used instead of PROPFIND/HEAD. The Receita
         # closes those methods for some GitHub-hosted runner addresses while
         # allowing ordinary file downloads.
+        if self.curl_path:
+            status, _ = self._curl_probe(url)
+            return status != 404
         with self.session.get(
             url,
             auth=self._auth_for_url(url),
@@ -286,6 +339,16 @@ class RfbSource:
 
     @retry(stop=stop_after_attempt(4), wait=wait_exponential(min=2, max=30), reraise=True)
     def metadata(self, remote: RemoteFile) -> tuple[int | None, str | None]:
+        if self.curl_path and self.mode == "nextcloud":
+            _, headers = self._curl_probe(remote.url)
+            ranges = re.findall(r"(?im)^content-range:\s*bytes\s+\d+-\d+/(\d+)\s*$", headers)
+            lengths = re.findall(r"(?im)^content-length:\s*(\d+)\s*$", headers)
+            modified_values = re.findall(r"(?im)^last-modified:\s*(.+?)\s*$", headers)
+            size = ranges[-1] if ranges else (lengths[-1] if lengths else "")
+            return (
+                int(size) if size.isdigit() else None,
+                modified_values[-1] if modified_values else None,
+            )
         with self.session.get(
             remote.url,
             timeout=self.timeout,
@@ -304,9 +367,48 @@ class RfbSource:
                 response.headers.get("Last-Modified"),
             )
 
+    @retry(
+        stop=stop_after_attempt(4),
+        wait=wait_exponential(min=2, max=30),
+        before_sleep=before_sleep_log(log, logging.WARNING),
+        reraise=True,
+    )
+    def _download_with_curl(
+        self, remote: RemoteFile, destination: str, chunk_bytes: int
+    ) -> tuple[str, int]:
+        command = self._curl_command(remote.url)
+        digest, size, last_logged = hashlib.sha256(), 0, 0
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        assert process.stdout is not None
+        assert process.stderr is not None
+        with open(destination, "wb") as output:
+            while chunk := process.stdout.read(chunk_bytes):
+                output.write(chunk)
+                digest.update(chunk)
+                size += len(chunk)
+                if size - last_logged >= DOWNLOAD_LOG_EVERY_BYTES:
+                    log.info("Download %s: %s recebidos", remote.name, fmt_bytes(size))
+                    last_logged = size
+        stderr = process.stderr.read().decode("utf-8", errors="replace").strip()
+        return_code = process.wait()
+        if return_code:
+            raise requests.ConnectionError(
+                stderr or f"curl encerrou com código {return_code} ao baixar {remote.name}"
+            )
+        return digest.hexdigest(), size
+
     def _download_to_path(
         self, remote: RemoteFile, destination: str, chunk_bytes: int
     ) -> tuple[str, int]:
+        if self.curl_path and self.mode == "nextcloud":
+            log.info("Download iniciado via curl: %s", remote.name)
+            sha256, size = self._download_with_curl(remote, destination, chunk_bytes)
+            log.info("Download concluído: %s (%s)", remote.name, fmt_bytes(size))
+            return sha256, size
         digest, size = hashlib.sha256(), 0
         last_logged = 0
         log.info("Download iniciado: %s", remote.name)

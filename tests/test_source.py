@@ -100,3 +100,15 @@ def test_current_public_dav_route_does_not_send_basic_auth():
 
     assert source._auth_for_url(current + "2026-09/Cnaes.zip") is None
     assert source._auth_for_url(legacy + "2026-09/Cnaes.zip") == ("share-token", "")
+
+
+def test_curl_command_only_authenticates_legacy_route(monkeypatch):
+    source = RfbSource("https://example.test/index.php/s/share-token")
+    monkeypatch.setattr(source, "curl_path", "/usr/bin/curl")
+    current, legacy = source.webdav_roots
+
+    current_command = source._curl_command(current + "2026-09/Cnaes.zip")
+    legacy_command = source._curl_command(legacy + "2026-09/Cnaes.zip")
+
+    assert "--user" not in current_command
+    assert legacy_command[legacy_command.index("--user") + 1] == "share-token:"
