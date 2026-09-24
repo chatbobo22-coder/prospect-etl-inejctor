@@ -155,6 +155,10 @@ def test_early_triage_records_ineligible_and_below_70():
 
     assert stats == {"ineligible": 4, "below_score": 7, "threshold": 70}
     assert conn.calls[1][1] == (70, 180, 70)
+    assert "company.razao_social" in conn.calls[0][0]
+    assert "e.telefone1" in conn.calls[0][0]
+    assert "v.nome_fantasia" in conn.calls[1][0]
+    assert "v.telefone_1" in conn.calls[1][0]
     assert "lead_score_abaixo_" in conn.calls[1][0]
     assert conn.committed is True
 

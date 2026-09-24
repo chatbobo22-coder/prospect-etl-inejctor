@@ -88,3 +88,12 @@ def test_quality_storage_funnel_keeps_only_ab_in_commercial_view():
     assert "etl.candidate_decisions" in text
     assert "decision IN ('qualified_a', 'qualified_b', 'rejected')" in text
     assert "p.lead_quality IN ('A', 'B')" in text
+
+
+def test_rejected_contact_archive_keeps_only_compact_contact_fields():
+    sql_dir = Path(__file__).resolve().parents[1] / "sql"
+    text = (sql_dir / "018_rejected_contact_archive.sql").read_text(encoding="utf-8")
+    assert "ALTER TABLE etl.candidate_decisions" in text
+    for field in ("razao_social", "nome_fantasia", "telefone", "email", "lead_score"):
+        assert field in text
+    assert "WHERE decision = 'rejected'" in text
