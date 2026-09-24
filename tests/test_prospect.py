@@ -2,6 +2,7 @@ from cnpj_etl.prospect import (
     CORE_INTELLIGENCE_SOURCES,
     classify_lead_quality,
     evaluate_qualification,
+    reject_before_intelligence,
     select_contact_channel,
 )
 
@@ -116,9 +117,10 @@ def test_free_email_can_be_quality_a():
 
 def test_quality_b_is_qualified():
     row = _base_row(
-        lead_score=62,
+        lead_score=72,
         confidence_score=72,
         site_valid=False,
+        site_reachable=False,
         whatsapp_valid=False,
         email="dono@hotmail.com",
         email_tipo="gratuito",
@@ -129,6 +131,32 @@ def test_quality_b_is_qualified():
     assert status == "qualified"
     assert not rejection
     assert "qualidade_b" in reasons
+
+
+def test_early_triage_records_ineligible_and_below_70():
+    class Result:
+        def __init__(self, rowcount):
+            self.rowcount = rowcount
+
+    class Connection:
+        def __init__(self):
+            self.calls = []
+            self.committed = False
+
+        def execute(self, query, params=None):
+            self.calls.append((query, params))
+            return Result(4 if len(self.calls) == 1 else 7)
+
+        def commit(self):
+            self.committed = True
+
+    conn = Connection()
+    stats = reject_before_intelligence(conn, min_lead_score=70)
+
+    assert stats == {"ineligible": 4, "below_score": 7, "threshold": 70}
+    assert conn.calls[1][1] == (70, 180, 70)
+    assert "lead_score_abaixo_" in conn.calls[1][0]
+    assert conn.committed is True
 
 
 def test_verified_public_profile_can_be_quality_b_without_a_website():

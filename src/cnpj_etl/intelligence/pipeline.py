@@ -92,7 +92,13 @@ def _run_source(conn, source_code: str, settings: IntelligenceSettings, *, force
             if source_code == "gdelt"
             else settings.batch_size
         )
-        companies = _pending_companies(conn, source_code, batch_size, force=force)
+        companies = _pending_companies(
+            conn,
+            source_code,
+            batch_size,
+            force=force,
+            min_lead_score=settings.min_lead_score,
+        )
         log.info("Inteligência %s: %s empresas", source_code, len(companies))
         consecutive_errors = 0
         for company in companies:
@@ -161,7 +167,14 @@ def _run_source(conn, source_code: str, settings: IntelligenceSettings, *, force
         raise
 
 
-def _pending_companies(conn, source_code: str, limit: int, *, force: bool) -> list[dict]:
+def _pending_companies(
+    conn,
+    source_code: str,
+    limit: int,
+    *,
+    force: bool,
+    min_lead_score: int = 70,
+) -> list[dict]:
     where = (
         "TRUE"
         if force
@@ -192,6 +205,7 @@ def _pending_companies(conn, source_code: str, limit: int, *, force: bool) -> li
         LEFT JOIN intelligence.company_source_state s
           ON s.cnpj=v.cnpj AND s.source_code=%s
         WHERE {where}
+        AND COALESCE(d.lead_score,0) >= %s
         {quality_gate}
         ORDER BY
           CASE WHEN %s='gdelt' THEN COALESCE(d.lead_score,0) ELSE 0 END DESC,
@@ -199,7 +213,7 @@ def _pending_companies(conn, source_code: str, limit: int, *, force: bool) -> li
         LIMIT %s
     """
     with conn.cursor(row_factory=dict_row) as cur:
-        cur.execute(query, (source_code, source_code, limit))
+        cur.execute(query, (source_code, min_lead_score, source_code, limit))
         return list(cur.fetchall())
 
 

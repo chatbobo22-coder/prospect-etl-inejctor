@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from collections.abc import Callable
 from typing import Any
 
 import requests
@@ -679,6 +680,7 @@ def run_enrichment_until_empty(
     settings: EnrichSettings | None = None,
     *,
     force: bool = False,
+    after_round: Callable[[int, dict], None] | None = None,
 ) -> dict[str, int]:
     settings = settings or EnrichSettings()
     totals = {"processed": 0, "done": 0, "partial": 0, "no_site": 0, "failed": 0, "rounds": 0}
@@ -701,6 +703,8 @@ def run_enrichment_until_empty(
         batch_count = stats.get("processed", 0)
         if batch_count == 0:
             break
+        if after_round:
+            after_round(totals["rounds"], stats)
         if force and stats.get("last_cnpj"):
             after_cnpj = stats["last_cnpj"]
     log.info("Enriquecimento finalizado após %s rodadas: %s", totals["rounds"], totals)

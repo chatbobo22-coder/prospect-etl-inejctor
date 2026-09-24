@@ -17,7 +17,7 @@ from .ibge_population import ensure_municipios_populacao
 from .intelligence import IntelligenceSettings, run_intelligence, run_intelligence_until_empty
 from .outreach_sync import sync_qualified_leads
 from .pipeline import run
-from .prospect import promote_qualified
+from .prospect import promote_qualified, reject_before_intelligence
 from .retention import prune_evaluated_candidates
 from .source import RfbSource
 
@@ -193,7 +193,28 @@ def main():
         batch_size = args.batch_size or int(os.getenv("ENRICH_BATCH_SIZE", "500"))
         settings_obj = EnrichSettings(batch_size=batch_size)
         with db.connect() as conn:
-            enrich_stats = run_enrichment_until_empty(conn, settings_obj, force=args.force_enrich)
+            initial_triage = reject_before_intelligence(conn)
+            initial_retention = prune_evaluated_candidates(conn)
+
+            def triage_round(round_number: int, round_stats: dict) -> None:
+                rejected = reject_before_intelligence(conn)
+                retained = prune_evaluated_candidates(conn)
+                logging.info(
+                    "Funil contínuo rodada=%s enrich=%s rejeitados=%s retenção=%s",
+                    round_number,
+                    round_stats,
+                    rejected,
+                    retained,
+                )
+
+            enrich_stats = run_enrichment_until_empty(
+                conn,
+                settings_obj,
+                force=args.force_enrich,
+                after_round=triage_round,
+            )
+            final_triage = reject_before_intelligence(conn)
+            pre_intelligence_retention = prune_evaluated_candidates(conn)
 
             def publish_round(round_number: int, round_stats: dict) -> None:
                 qualify_round = promote_qualified(conn)
@@ -245,8 +266,14 @@ def main():
             synced = sync_qualified_leads(conn)
             retention_stats = prune_evaluated_candidates(conn)
         logging.info(
-            "Pipeline prospect: enrich=%s intelligence=%s qualify=%s outreach=%s retention=%s",
+            "Pipeline prospect: triagem_inicial=%s retenção_inicial=%s enrich=%s "
+            "triagem_final=%s retenção_pre_inteligência=%s intelligence=%s "
+            "qualify=%s outreach=%s retention=%s",
+            initial_triage,
+            initial_retention,
             enrich_stats,
+            final_triage,
+            pre_intelligence_retention,
             intelligence_stats,
             qualify_stats,
             synced,

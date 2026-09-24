@@ -112,7 +112,7 @@ class Settings:
     filter_min_activity_months: int = int(os.getenv("FILTER_MIN_ACTIVITY_MONTHS", "12"))
     filter_min_population: int = field(default_factory=_parse_min_population)
     filter_headquarters_only: bool = _env_flag("FILTER_HEADQUARTERS_ONLY", "true")
-    filter_max_candidates_per_run: int = int(os.getenv("FILTER_MAX_CANDIDATES_PER_RUN", "4000"))
+    filter_max_candidates_per_run: int = int(os.getenv("FILTER_MAX_CANDIDATES_PER_RUN", "12000"))
     ibge_population_year: int = int(os.getenv("IBGE_POPULATION_YEAR", "2024"))
     filter_ufs: frozenset[str] = field(default_factory=_parse_filter_ufs)
 

@@ -39,15 +39,17 @@ class InjectorConfig(BaseModel):
     min_population: int = Field(default=0, ge=0)
     exclude_mei: bool = True
     min_confidence_score: int = Field(default=70, ge=0, le=100)
-    min_lead_score: int = Field(default=60, ge=0, le=100)
-    force_etl: bool = False
+    min_lead_score: int = Field(default=70, ge=0, le=100)
+    load_batch_size: int = Field(default=12000, ge=1000, le=50000)
+    force_etl: bool = True
+    continuous: bool = True
     force_enrich: bool = False
     enrich_batch_size: int = Field(default=500, ge=1, le=5000)
     intelligence_sources: str = (
         "receita,email_quality,website,rdap,cvm,gdelt,pncp,inpi,google_places,pagespeed,"
         "meta_ads,google_ads,people_provider"
     )
-    intelligence_batch_size: int = Field(default=100, ge=1, le=1000)
+    intelligence_batch_size: int = Field(default=250, ge=1, le=1000)
 
     @field_validator("competence")
     @classmethod
@@ -262,7 +264,8 @@ def _runtime_log_lines(
         "[BASE] "
         f"empresas={int(counts.get('companies') or 0):,} | "
         f"enriquecidas={int(counts.get('enriched') or 0):,} | "
-        f"qualificadas A/B={int(counts.get('qualified') or 0):,}"
+        f"qualificadas A/B={int(counts.get('qualified') or 0):,} | "
+        f"descartadas={int(counts.get('rejected') or 0):,}"
     )
 
     intelligence = telemetry.get("intelligence") or {}
@@ -375,7 +378,14 @@ def _database_telemetry(workflow_run_id: int) -> dict[str, Any]:
               (SELECT count(*) FROM cnpj.digital_presenca),
               (SELECT count(*) FROM cnpj.prospectos_qualificados
                 WHERE qualification_status='qualified'
-                  AND lead_quality IN ('A','B'))
+                  AND lead_quality IN ('A','B')),
+              (SELECT count(*) FROM etl.candidate_decisions WHERE decision='rejected'),
+              (SELECT count(*) FROM etl.candidate_decisions
+                WHERE decision='rejected'
+                  AND EXISTS (
+                    SELECT 1 FROM unnest(reason_codes) AS reasons(reason)
+                    WHERE reason LIKE 'lead_score_abaixo_%'
+                  ))
             """
         ).fetchone()
         source_rows = conn.execute(
@@ -466,6 +476,8 @@ def _database_telemetry(workflow_run_id: int) -> dict[str, Any]:
             "companies": counts[0],
             "enriched": counts[1],
             "qualified": counts[2],
+            "rejected": counts[3],
+            "rejected_below_score": counts[4],
         },
         "intelligence": {
             "profiles": profiles,
@@ -543,15 +555,17 @@ def injector_config():
             "exclude_mei": os.getenv("PROSPECT_EXCLUDE_MEI", "true").lower()
             in {"1", "true", "yes", "on"},
             "min_confidence_score": int(os.getenv("PROSPECT_MIN_CONFIDENCE_SCORE", "70")),
-            "min_lead_score": int(os.getenv("PROSPECT_MIN_LEAD_SCORE", "60")),
-            "force_etl": False,
+            "min_lead_score": int(os.getenv("PROSPECT_MIN_LEAD_SCORE", "70")),
+            "load_batch_size": int(os.getenv("LOAD_BATCH_SIZE", "12000")),
+            "force_etl": True,
+            "continuous": True,
             "force_enrich": False,
             "enrich_batch_size": int(os.getenv("ENRICH_BATCH_SIZE", "500")),
             "intelligence_sources": os.getenv(
                 "INTELLIGENCE_SOURCES",
                 "receita,email_quality,website,rdap,cvm,gdelt,pncp,inpi,google_places,pagespeed,meta_ads,google_ads,people_provider",
             ),
-            "intelligence_batch_size": int(os.getenv("INTELLIGENCE_BATCH_SIZE", "100")),
+            "intelligence_batch_size": int(os.getenv("INTELLIGENCE_BATCH_SIZE", "250")),
         }
     }
 
@@ -578,7 +592,9 @@ def start_injector(config: InjectorConfig):
                 "exclude_mei": str(config.exclude_mei).lower(),
                 "min_confidence_score": str(config.min_confidence_score),
                 "min_lead_score": str(config.min_lead_score),
+                "load_batch_size": str(config.load_batch_size),
                 "force_etl": str(config.force_etl).lower(),
+                "continuous": str(config.continuous).lower(),
                 "force_enrich": str(config.force_enrich).lower(),
                 "enrich_batch_size": str(config.enrich_batch_size),
                 "intelligence_sources": config.intelligence_sources,
@@ -648,7 +664,13 @@ def workflow_run_detail(run_id: int):
             "etl_run": None,
             "files": [],
             "storage": {"database_bytes": 0, "limit_bytes": None, "schemas": {}},
-            "counts": {"companies": 0, "enriched": 0, "qualified": 0},
+            "counts": {
+                "companies": 0,
+                "enriched": 0,
+                "qualified": 0,
+                "rejected": 0,
+                "rejected_below_score": 0,
+            },
             "warning": "Telemetria do banco temporariamente indisponível",
         }
     log_lines = _runtime_log_lines(run, steps, telemetry, log_lines)

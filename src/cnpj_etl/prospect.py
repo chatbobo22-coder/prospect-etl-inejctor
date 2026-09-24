@@ -19,6 +19,73 @@ CORE_INTELLIGENCE_SOURCES = (
 )
 
 
+def reject_before_intelligence(conn, *, min_lead_score: int | None = None) -> dict[str, int]:
+    """Descarta cedo o que não deve consumir consultas de inteligência.
+
+    Mantém apenas a decisão mínima em ``etl.candidate_decisions``. Os dados
+    brutos e derivados são removidos por ``prune_evaluated_candidates``.
+    """
+    threshold = (
+        _env_int("PROSPECT_MIN_LEAD_SCORE", 70)
+        if min_lead_score is None
+        else min_lead_score
+    )
+    review_days = _env_int("REJECTED_REVIEW_DAYS", 180)
+
+    ineligible = conn.execute(
+        """
+        INSERT INTO etl.candidate_decisions
+          (cnpj,cnpj_basico,decision,profile_score,data_confidence_score,
+           reason_codes,source_competence,evaluated_at,next_review_at,updated_at)
+        SELECT e.cnpj,e.cnpj_basico,'rejected',0,0,
+          CASE WHEN COALESCE(s.opcao_mei,'N')='S'
+            THEN ARRAY['mei_excluido_pre_enriquecimento']::text[]
+            ELSE ARRAY['fora_filtro_pre_enriquecimento']::text[]
+          END,
+          e.source_competence,now(),now()+(%s * interval '1 day'),now()
+        FROM cnpj.estabelecimentos e
+        LEFT JOIN cnpj.simples s ON s.cnpj_basico=e.cnpj_basico
+        WHERE NOT EXISTS (
+          SELECT 1 FROM cnpj.v_prospect_candidates candidate WHERE candidate.cnpj=e.cnpj
+        )
+          AND NOT EXISTS (
+            SELECT 1 FROM etl.candidate_decisions decision WHERE decision.cnpj=e.cnpj
+          )
+        ON CONFLICT (cnpj) DO NOTHING
+        """,
+        (review_days,),
+    ).rowcount
+
+    low_score = conn.execute(
+        """
+        INSERT INTO etl.candidate_decisions
+          (cnpj,cnpj_basico,decision,profile_score,data_confidence_score,
+           reason_codes,source_competence,evaluated_at,next_review_at,updated_at)
+        SELECT d.cnpj,d.cnpj_basico,'rejected',
+          LEAST(100,GREATEST(0,COALESCE(d.lead_score,0)))::smallint,0,
+          ARRAY['lead_score_abaixo_' || %s::text]::text[],
+          v.source_competence,now(),now()+(%s * interval '1 day'),now()
+        FROM cnpj.digital_presenca d
+        JOIN cnpj.v_prospect_candidates v ON v.cnpj=d.cnpj
+        WHERE d.enrich_status IN ('done','partial','no_site','failed')
+          AND COALESCE(d.lead_score,0) < %s
+          AND NOT EXISTS (
+            SELECT 1 FROM etl.candidate_decisions decision WHERE decision.cnpj=d.cnpj
+          )
+        ON CONFLICT (cnpj) DO NOTHING
+        """,
+        (threshold, review_days, threshold),
+    ).rowcount
+    conn.commit()
+    stats = {
+        "ineligible": max(0, ineligible),
+        "below_score": max(0, low_score),
+        "threshold": threshold,
+    }
+    log.info("Triagem antecipada antes da inteligência: %s", stats)
+    return stats
+
+
 def _env_int(name: str, default: int) -> int:
     raw = os.getenv(name)
     if raw is None or not raw.strip():
@@ -85,7 +152,7 @@ def classify_lead_quality(row: dict, channel: str | None) -> str | None:
     digital_quality = None
     if lead >= 70 and confidence >= 70 and has_strong_signal:
         digital_quality = "A" if delivery == "valid" else "B"
-    elif lead >= 60 and confidence >= 70:
+    elif lead >= 70 and confidence >= 70:
         digital_quality = "B"
     public_quality = None
     public_profile_verified = (
@@ -116,7 +183,7 @@ def evaluate_qualification(row: dict) -> tuple[str, list[str], list[str]]:
     reasons: list[str] = []
 
     min_confidence = _env_int("PROSPECT_MIN_CONFIDENCE_SCORE", 70)
-    min_lead = _env_int("PROSPECT_MIN_LEAD_SCORE", 60)
+    min_lead = _env_int("PROSPECT_MIN_LEAD_SCORE", 70)
 
     confidence = int(row.get("confidence_score") or row.get("digital_score") or 0)
     lead = int(row.get("lead_score") or row.get("digital_score") or 0)

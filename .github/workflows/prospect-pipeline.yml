@@ -3,6 +3,10 @@ name: Prospect Pipeline
 env:
   SQL_DIR: ${{ github.workspace }}/sql
 
+permissions:
+  actions: write
+  contents: read
+
 on:
   schedule:
     # Diário às 03:00 UTC (00:00 BRT)
@@ -71,9 +75,19 @@ on:
         description: "Pontuação mínima para qualidade A/B"
         required: false
         type: string
-        default: "60"
+        default: "70"
+      load_batch_size:
+        description: "Candidatos brutos por ciclo antes da triagem"
+        required: false
+        type: string
+        default: "12000"
       force_etl:
         description: "Reprocessa ZIPs da Receita (incrementa base, não apaga)"
+        required: false
+        type: boolean
+        default: true
+      continuous:
+        description: "Inicia automaticamente o próximo lote após concluir"
         required: false
         type: boolean
         default: true
@@ -96,7 +110,7 @@ on:
         description: "Empresas consultadas por fonte e por execução"
         required: false
         type: string
-        default: "100"
+        default: "250"
 
 concurrency:
   group: cnpj-enrichment-write
@@ -144,7 +158,7 @@ jobs:
           echo "FILTER_REQUIRE_EMAIL=${{ inputs.require_email != false }}" >> "$GITHUB_ENV"
           echo "FILTER_BLOCK_BACKOFFICE_EMAIL=${{ inputs.block_backoffice_email != false }}" >> "$GITHUB_ENV"
           echo "FILTER_HEADQUARTERS_ONLY=true" >> "$GITHUB_ENV"
-          echo "FILTER_MAX_CANDIDATES_PER_RUN=4000" >> "$GITHUB_ENV"
+          echo "FILTER_MAX_CANDIDATES_PER_RUN=${{ inputs.load_batch_size || '12000' }}" >> "$GITHUB_ENV"
           echo "FILTER_MIN_ACTIVITY_MONTHS=${{ inputs.min_activity_months || '12' }}" >> "$GITHUB_ENV"
           echo "FILTER_MIN_POPULATION=${{ inputs.min_population || '0' }}" >> "$GITHUB_ENV"
           echo "CHUNK_SIZE=5000" >> "$GITHUB_ENV"
@@ -152,20 +166,24 @@ jobs:
           echo "IBGE_POPULATION_YEAR=2024" >> "$GITHUB_ENV"
           echo "ENRICH_CANDIDATE_VIEW=cnpj.v_prospect_candidates" >> "$GITHUB_ENV"
           echo "ENRICH_BATCH_SIZE=${{ inputs.enrich_batch_size || '500' }}" >> "$GITHUB_ENV"
-          echo "ENRICH_MAX_ROUNDS=8" >> "$GITHUB_ENV"
-          echo "ENRICH_BRASILAPI=true" >> "$GITHUB_ENV"
-          echo "ENRICH_DELAY_SECONDS=0.3" >> "$GITHUB_ENV"
+          echo "ENRICH_MAX_ROUNDS=40" >> "$GITHUB_ENV"
+          echo "ENRICH_BRASILAPI=false" >> "$GITHUB_ENV"
+          echo "ENRICH_DELAY_SECONDS=0.05" >> "$GITHUB_ENV"
+          echo "ENRICH_REQUEST_TIMEOUT=8" >> "$GITHUB_ENV"
           echo "PROSPECT_MIN_CONFIDENCE_SCORE=${{ inputs.min_confidence_score || '70' }}" >> "$GITHUB_ENV"
-          echo "PROSPECT_MIN_LEAD_SCORE=${{ inputs.min_lead_score || '60' }}" >> "$GITHUB_ENV"
+          echo "PROSPECT_MIN_LEAD_SCORE=${{ inputs.min_lead_score || '70' }}" >> "$GITHUB_ENV"
+          echo "INTELLIGENCE_MIN_LEAD_SCORE=${{ inputs.min_lead_score || '70' }}" >> "$GITHUB_ENV"
+          echo "REJECTED_REVIEW_DAYS=180" >> "$GITHUB_ENV"
           echo "PROSPECT_EXCLUDE_MEI=${{ inputs.exclude_mei != false }}" >> "$GITHUB_ENV"
           echo "ENRICHMENT_VERSION=v2" >> "$GITHUB_ENV"
           echo "ENRICH_NO_SITE_RETRY_DAYS=30" >> "$GITHUB_ENV"
-          echo "CRAWLER_MAX_PAGES=8" >> "$GITHUB_ENV"
+          echo "CRAWLER_MAX_PAGES=3" >> "$GITHUB_ENV"
           echo "GOOGLE_PLACES_ENABLED=false" >> "$GITHUB_ENV"
           echo "INTELLIGENCE_SOURCES=${{ inputs.intelligence_sources || 'receita,email_quality,website,rdap,cvm,gdelt' }}" >> "$GITHUB_ENV"
           # GDELT/CVM enriquecem o perfil, mas não seguram um lead digital A/B.
           echo "STRICT_INTELLIGENCE_GATE=false" >> "$GITHUB_ENV"
-          echo "INTELLIGENCE_BATCH_SIZE=${{ inputs.intelligence_batch_size || '100' }}" >> "$GITHUB_ENV"
+          echo "INTELLIGENCE_BATCH_SIZE=${{ inputs.intelligence_batch_size || '250' }}" >> "$GITHUB_ENV"
+          echo "INTELLIGENCE_DELAY_SECONDS=0.05" >> "$GITHUB_ENV"
           echo "INTELLIGENCE_MAX_ROUNDS=40" >> "$GITHUB_ENV"
           echo "GDELT_TIMEOUT_SECONDS=12" >> "$GITHUB_ENV"
           echo "GDELT_BATCH_SIZE=25" >> "$GITHUB_ENV"
@@ -262,3 +280,57 @@ jobs:
           print(f"sincronizados_outreach={outreach}")
           print(f"google_places_requests_24h={gplaces}")
           PY
+
+      - name: Check whether another batch exists
+        id: next_batch
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.continuous == true }}
+        env:
+          LOAD_BATCH_SIZE: ${{ inputs.load_batch_size || '12000' }}
+        run: |
+          python - <<'PY'
+          import os
+          import psycopg
+
+          batch_size = int(os.environ["LOAD_BATCH_SIZE"])
+          with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
+              competence = conn.execute(
+                  "SELECT competence FROM etl.runs ORDER BY id DESC LIMIT 1"
+              ).fetchone()[0]
+              loaded = conn.execute(
+                  "SELECT COALESCE(SUM(rows_processed),0) FROM etl.files "
+                  "WHERE competence=%s AND file_type='Estabelecimentos'",
+                  (competence,),
+              ).fetchone()[0]
+          should_continue = int(loaded) >= batch_size
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"continue={'true' if should_continue else 'false'}\n")
+          print(f"lote_estabelecimentos={loaded} limite={batch_size} continuar={should_continue}")
+          PY
+
+      - name: Queue next continuous batch
+        if: ${{ steps.next_batch.outputs.continue == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run prospect-pipeline.yml \
+            --ref "${{ github.ref_name }}" \
+            -f competence="${{ inputs.competence }}" \
+            -f filter_cnaes="${{ inputs.filter_cnaes }}" \
+            -f active_only="${{ inputs.active_only }}" \
+            -f include_secondary_cnae="${{ inputs.include_secondary_cnae }}" \
+            -f require_nome_fantasia="${{ inputs.require_nome_fantasia }}" \
+            -f require_telefone="${{ inputs.require_telefone }}" \
+            -f require_email="${{ inputs.require_email }}" \
+            -f block_backoffice_email="${{ inputs.block_backoffice_email }}" \
+            -f min_activity_months="${{ inputs.min_activity_months }}" \
+            -f min_population="${{ inputs.min_population }}" \
+            -f exclude_mei="${{ inputs.exclude_mei }}" \
+            -f min_confidence_score="${{ inputs.min_confidence_score }}" \
+            -f min_lead_score="${{ inputs.min_lead_score }}" \
+            -f load_batch_size="${{ inputs.load_batch_size }}" \
+            -f force_etl=true \
+            -f continuous=true \
+            -f force_enrich=false \
+            -f enrich_batch_size="${{ inputs.enrich_batch_size }}" \
+            -f intelligence_sources="${{ inputs.intelligence_sources }}" \
+            -f intelligence_batch_size="${{ inputs.intelligence_batch_size }}"

@@ -82,7 +82,7 @@ def test_gdelt_pending_queue_only_contains_published_quality_leads():
 
     assert "FROM cnpj.prospectos_qualificados prospect" in conn.last_cursor.query
     assert "prospect.lead_quality IN ('A','B')" in conn.last_cursor.query
-    assert conn.last_cursor.params == ("gdelt", "gdelt", 25)
+    assert conn.last_cursor.params == ("gdelt", 70, "gdelt", 25)
 
 
 def test_fast_source_pending_queue_does_not_require_published_lead():
@@ -91,6 +91,8 @@ def test_fast_source_pending_queue_does_not_require_published_lead():
     pipeline._pending_companies(conn, "receita", 100, force=False)
 
     assert "FROM cnpj.prospectos_qualificados prospect" not in conn.last_cursor.query
+    assert "COALESCE(d.lead_score,0) >= %s" in conn.last_cursor.query
+    assert conn.last_cursor.params == ("receita", 70, "receita", 100)
 
 
 class _RunConnection:

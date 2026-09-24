@@ -4,9 +4,8 @@ env:
   SQL_DIR: ${{ github.workspace }}/sql
 
 on:
-  schedule:
-    # A cada hora, no minuto 0 (UTC)
-    - cron: "0 * * * *"
+  # Mantido apenas para recuperação manual. O prospect-pipeline encadeia os
+  # lotes continuamente e evita duas cargas concorrentes no mesmo banco.
   workflow_dispatch:
     inputs:
       competence:
@@ -25,7 +24,7 @@ on:
         default: false
 
 concurrency:
-  group: cnpj-etl
+  group: cnpj-enrichment-write
   cancel-in-progress: false
 
 jobs:
@@ -70,7 +69,7 @@ jobs:
           echo "FILTER_REQUIRE_EMAIL=true" >> "$GITHUB_ENV"
           echo "FILTER_BLOCK_BACKOFFICE_EMAIL=true" >> "$GITHUB_ENV"
           echo "FILTER_HEADQUARTERS_ONLY=true" >> "$GITHUB_ENV"
-          echo "FILTER_MAX_CANDIDATES_PER_RUN=4000" >> "$GITHUB_ENV"
+          echo "FILTER_MAX_CANDIDATES_PER_RUN=12000" >> "$GITHUB_ENV"
           echo "FILTER_MIN_ACTIVITY_MONTHS=12" >> "$GITHUB_ENV"
           echo "FILTER_MIN_POPULATION=0" >> "$GITHUB_ENV"
           echo "CHUNK_SIZE=5000" >> "$GITHUB_ENV"

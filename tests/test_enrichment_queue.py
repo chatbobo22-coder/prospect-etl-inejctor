@@ -61,6 +61,13 @@ def test_until_empty_tracks_processed(monkeypatch):
     conn.execute.side_effect = _execute
 
     settings = EnrichSettings(max_rounds=5, batch_size=1)
-    stats = run_enrichment_until_empty(conn, settings, force=True)
+    rounds = []
+    stats = run_enrichment_until_empty(
+        conn,
+        settings,
+        force=True,
+        after_round=lambda number, result: rounds.append((number, result["processed"])),
+    )
     assert stats["processed"] == 2
     assert calls["n"] >= 2
+    assert rounds == [(1, 1), (2, 1)]
