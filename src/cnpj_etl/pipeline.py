@@ -1,6 +1,7 @@
 import logging
 from dataclasses import replace
 import os
+from collections.abc import Callable
 
 from .filters import FILE_LOAD_ORDER, FilterContext
 from .ibge_population import ensure_municipios_populacao, load_allowed_municipios
@@ -123,6 +124,14 @@ def sort_files(files, filter_ctx: FilterContext):
     return sorted(files, key=lambda f: (FILE_LOAD_ORDER.get(f.file_type, 99), f.name))
 
 
+def candidate_limit_reached(filter_ctx: FilterContext | None) -> bool:
+    return bool(
+        filter_ctx
+        and filter_ctx.max_candidates > 0
+        and len(filter_ctx.selected_cnpjs) >= filter_ctx.max_candidates
+    )
+
+
 def run(
     settings,
     db,
@@ -130,6 +139,7 @@ def run(
     competence: str | None = None,
     force: bool = False,
     auto_bootstrap: bool = False,
+    after_file: Callable[[object, object, int], None] | None = None,
 ):
     if os.getenv("GITHUB_ACTIONS") == "true" and not settings.filters_enabled():
         raise RuntimeError(
@@ -183,6 +193,40 @@ def run(
                     remote.file_type,
                     _fmt_remote_size(source_size),
                 )
+                if remote.file_type == "Estabelecimentos" and candidate_limit_reached(filter_ctx):
+                    # O orçamento de candidatos já foi preenchido. Baixar os
+                    # demais ZIPs de estabelecimentos só gastaria minutos para
+                    # produzir zero linhas; registre-os como concluídos neste ciclo.
+                    log.info(
+                        "[FAST-LEAD] Limite de %s candidatos atingido; ignorando %s",
+                        filter_ctx.max_candidates,
+                        remote.name,
+                    )
+                    lock_conn.execute(
+                        "INSERT INTO etl.files "
+                        "(competence,file_name,file_type,source_url,source_size,"
+                        "source_last_modified,status,rows_processed,processed_at) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,'success',0,now()) "
+                        "ON CONFLICT (competence,file_name) DO UPDATE SET "
+                        "source_size=EXCLUDED.source_size,"
+                        "source_last_modified=EXCLUDED.source_last_modified,"
+                        "status='success',rows_processed=0,processed_at=now(),error_message=NULL",
+                        (
+                            competence,
+                            remote.name,
+                            remote.file_type,
+                            remote.url,
+                            source_size,
+                            source_last_modified,
+                        ),
+                    )
+                    processed += 1
+                    lock_conn.execute(
+                        "UPDATE etl.runs SET files_processed=%s,rows_processed=%s WHERE id=%s",
+                        (processed, total, run_id),
+                    )
+                    lock_conn.commit()
+                    continue
                 existing = lock_conn.execute(
                     "SELECT status,source_size,source_last_modified FROM etl.files "
                     "WHERE competence=%s AND file_name=%s",
@@ -268,6 +312,16 @@ def run(
                 )
                 lock_conn.commit()
                 log.info("Concluído %s (%s linhas)", remote.name, rows)
+                if after_file:
+                    try:
+                        after_file(lock_conn, remote, rows)
+                    except Exception:
+                        lock_conn.rollback()
+                        log.exception(
+                            "[FAST-LEAD] Funil incremental falhou após %s; "
+                            "a carga principal continuará",
+                            remote.name,
+                        )
             lock_conn.execute(
                 "UPDATE etl.runs SET status='success',finished_at=now(),"
                 "files_processed=%s,rows_processed=%s WHERE id=%s",

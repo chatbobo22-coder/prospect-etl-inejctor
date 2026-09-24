@@ -105,3 +105,47 @@ def test_migrate_file_retries_a_deadlock(tmp_path, monkeypatch):
     assert connection.migration_attempts == 2
     assert connection.rollbacks == 1
     assert connection.commits == 1
+
+
+def test_fast_lead_cycle_publishes_after_company_file(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(cli, "run_enrichment", lambda *_a, **_k: calls.append("enrich") or {})
+    monkeypatch.setattr(
+        cli,
+        "reject_before_intelligence",
+        lambda *_a, **_k: calls.append("triage") or {},
+    )
+    monkeypatch.setattr(
+        cli,
+        "prune_evaluated_candidates",
+        lambda *_a, **_k: calls.append("prune") or {},
+    )
+    monkeypatch.setattr(
+        cli,
+        "run_intelligence",
+        lambda *_a, **_k: calls.append("intelligence") or {},
+    )
+    monkeypatch.setattr(
+        cli,
+        "promote_qualified",
+        lambda *_a, **_k: calls.append("qualify") or {},
+    )
+    monkeypatch.setattr(
+        cli,
+        "sync_qualified_leads",
+        lambda *_a, **_k: calls.append("outreach") or 1,
+    )
+    remote = type("Remote", (), {"file_type": "Empresas", "name": "Empresas0.zip"})()
+
+    cli.run_fast_lead_cycle(object(), remote, 100)
+
+    assert calls == [
+        "enrich",
+        "triage",
+        "prune",
+        "intelligence",
+        "qualify",
+        "outreach",
+        "prune",
+    ]

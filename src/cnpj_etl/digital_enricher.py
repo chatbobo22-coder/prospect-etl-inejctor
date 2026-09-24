@@ -526,6 +526,26 @@ def fetch_pending(
         params.append(after_cnpj)
     params.append(limit)
 
+    order_clause = (
+        sql.SQL("v.cnpj ASC")
+        if after_cnpj
+        else sql.SQL(
+            """
+            CASE
+              WHEN lower(split_part(v.email, '@', 2)) NOT IN (
+                'gmail.com','hotmail.com','outlook.com','yahoo.com','yahoo.com.br',
+                'icloud.com','live.com','bol.com.br','uol.com.br','terra.com.br'
+              ) THEN 0 ELSE 1
+            END,
+            CASE v.porte WHEN '05' THEN 0 WHEN '03' THEN 1 WHEN '01' THEN 2 ELSE 3 END,
+            (COALESCE(v.capital_social, 0) > 0) DESC,
+            (NULLIF(v.nome_fantasia, '') IS NOT NULL) DESC,
+            (NULLIF(v.telefone_1, '') IS NOT NULL) DESC,
+            v.cnpj ASC
+            """
+        )
+    )
+
     query = sql.SQL(
         """
         SELECT
@@ -536,12 +556,13 @@ def fetch_pending(
         FROM {view} v
         LEFT JOIN cnpj.digital_presenca d ON d.cnpj = v.cnpj
         WHERE {where_clause}
-        ORDER BY v.cnpj ASC
+        ORDER BY {order_clause}
         LIMIT %s
         """
     ).format(
         view=sql.Identifier(*view.split(".")),
         where_clause=sql.SQL(" AND ").join(sql.SQL(c) for c in conditions),
+        order_clause=order_clause,
     )
     rows = conn.execute(query, params).fetchall()
     columns = [

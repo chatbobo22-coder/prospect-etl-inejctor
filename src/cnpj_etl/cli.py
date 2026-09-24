@@ -17,9 +17,58 @@ from .ibge_population import ensure_municipios_populacao
 from .intelligence import IntelligenceSettings, run_intelligence, run_intelligence_until_empty
 from .outreach_sync import sync_qualified_leads
 from .pipeline import run
-from .prospect import promote_qualified, reject_before_intelligence
+from .prospect import CORE_INTELLIGENCE_SOURCES, promote_qualified, reject_before_intelligence
 from .retention import prune_evaluated_candidates
 from .source import RfbSource
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def run_fast_lead_cycle(conn, remote, rows: int) -> None:
+    """Publica leads fortes durante a carga, sem esperar o último ZIP da Receita."""
+    if remote.file_type != "Empresas" or rows <= 0:
+        return
+
+    batch_size = int(os.getenv("FAST_LEAD_BATCH_SIZE", "100"))
+    lead_threshold = int(os.getenv("PROSPECT_MIN_LEAD_SCORE", "70"))
+    logging.info(
+        "[FAST-LEAD] %s carregado; validando até %s melhores candidatos agora",
+        remote.name,
+        batch_size,
+    )
+    enrich_stats = run_enrichment(conn, EnrichSettings(batch_size=batch_size))
+    triage_stats = reject_before_intelligence(conn, min_lead_score=lead_threshold)
+    retention_before = prune_evaluated_candidates(conn)
+
+    intelligence_stats = run_intelligence(
+        conn,
+        replace(
+            IntelligenceSettings(),
+            sources=CORE_INTELLIGENCE_SOURCES,
+            batch_size=batch_size,
+            min_lead_score=lead_threshold,
+            max_rounds=1,
+        ),
+    )
+    qualify_stats = promote_qualified(conn)
+    synced = sync_qualified_leads(conn)
+    retention_after = prune_evaluated_candidates(conn)
+    logging.info(
+        "[FAST-LEAD] lote publicado: enrich=%s triagem=%s intelligence=%s "
+        "qualify=%s outreach=%s retention_before=%s retention_after=%s",
+        enrich_stats,
+        triage_stats,
+        intelligence_stats,
+        qualify_stats,
+        synced,
+        retention_before,
+        retention_after,
+    )
 
 
 def resolve_sql_dir() -> Path:
@@ -330,6 +379,7 @@ def main():
         db.migrate(sql_dir)
     else:
         db.migrate(sql_dir)
+        after_file = run_fast_lead_cycle if _env_flag("FAST_LEAD_MODE", True) else None
         run(
             settings,
             db,
@@ -337,6 +387,7 @@ def main():
             args.competence,
             args.force,
             args.auto,
+            after_file=after_file,
         )
 
 

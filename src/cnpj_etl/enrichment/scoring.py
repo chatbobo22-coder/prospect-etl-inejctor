@@ -94,15 +94,21 @@ def calculate_fit_score(result: EnrichResult) -> int:
     if result.cnae_fiscal_principal and result.cnae_fiscal_principal in priority:
         score += 30
     elif result.cnae_fiscal_principal:
-        score += 10
+        # Sem uma whitelist fixa de CNAEs, a atividade válida continua sendo
+        # evidência básica de fit. Os sinais observados abaixo decidem a força.
+        score += 20
     porte = result.sinais.get("porte")
-    if porte == "03":
+    if porte == "01":
+        score += 5
+    elif porte == "03":
         score += 15
     elif porte == "05":
         score += 20
     if result.commerce_maturity == "ecommerce_confirmado":
-        score += 20
+        score += 30
     elif result.commerce_maturity == "ecommerce_provavel":
+        score += 20
+    elif result.commerce_maturity == "ecommerce_indicio":
         score += 10
     if result.has_catalog:
         score += 10

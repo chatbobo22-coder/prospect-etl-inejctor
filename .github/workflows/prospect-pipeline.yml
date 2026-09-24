@@ -152,7 +152,7 @@ jobs:
       - name: Install
         run: pip install .
 
-      - name: Configure pipeline (carga ampla + enriquecimento máximo)
+      - name: Configure pipeline (melhores leads primeiro)
         env:
           SPEEDIO_KEY: ${{ secrets.ENRICH_EXTERNAL_API_KEY }}
         run: |
@@ -163,6 +163,8 @@ jobs:
           echo "FILTER_BLOCK_BACKOFFICE_EMAIL=${{ inputs.block_backoffice_email != false }}" >> "$GITHUB_ENV"
           echo "FILTER_HEADQUARTERS_ONLY=true" >> "$GITHUB_ENV"
           echo "FILTER_MAX_CANDIDATES_PER_RUN=${{ inputs.load_batch_size || '12000' }}" >> "$GITHUB_ENV"
+          echo "FAST_LEAD_MODE=true" >> "$GITHUB_ENV"
+          echo "FAST_LEAD_BATCH_SIZE=100" >> "$GITHUB_ENV"
           echo "FILTER_MIN_ACTIVITY_MONTHS=${{ inputs.min_activity_months || '12' }}" >> "$GITHUB_ENV"
           echo "FILTER_MIN_POPULATION=${{ inputs.min_population || '0' }}" >> "$GITHUB_ENV"
           echo "CHUNK_SIZE=5000" >> "$GITHUB_ENV"
@@ -222,7 +224,7 @@ jobs:
       - name: Migrate and sync IBGE
         run: python -m cnpj_etl.cli sync-ibge
 
-      - name: Run ETL (carga ampla varejo ativo)
+      - name: Run ETL + publish best leads continuously
         env:
           KEEP_DOWNLOADS: "false"
         run: |
@@ -235,7 +237,7 @@ jobs:
           fi
           python -m cnpj_etl.cli run $args
 
-      - name: Enrich + qualify prospects
+      - name: Finish remaining enrichment + qualification
         run: |
           args=""
           if [ "${{ inputs.force_enrich }}" = "true" ]; then

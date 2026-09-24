@@ -211,12 +211,13 @@ def _pending_companies(
         AND COALESCE(d.lead_score,0) >= %s
         {quality_gate}
         ORDER BY
-          CASE WHEN %s='gdelt' THEN COALESCE(d.lead_score,0) ELSE 0 END DESC,
+          COALESCE(d.lead_score,0) DESC,
+          COALESCE(d.confidence_score,0) DESC,
           v.cnpj
         LIMIT %s
     """
     with conn.cursor(row_factory=dict_row) as cur:
-        cur.execute(query, (source_code, min_lead_score, source_code, limit))
+        cur.execute(query, (source_code, min_lead_score, limit))
         return list(cur.fetchall())
 
 

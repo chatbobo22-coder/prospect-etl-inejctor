@@ -1,6 +1,7 @@
 from datetime import date
 
 from cnpj_etl.filters import (
+    FILE_LOAD_ORDER,
     FilterContext,
     has_eligible_email,
     has_minimum_activity_age,
@@ -8,6 +9,11 @@ from cnpj_etl.filters import (
     should_load_row,
     track_estabelecimento,
 )
+
+
+def test_simples_is_loaded_before_company_for_early_mei_exclusion():
+    assert FILE_LOAD_ORDER["Estabelecimentos"] < FILE_LOAD_ORDER["Simples"]
+    assert FILE_LOAD_ORDER["Simples"] < FILE_LOAD_ORDER["Empresas"]
 
 
 def test_active_cnae_match():

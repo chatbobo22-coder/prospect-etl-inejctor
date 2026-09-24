@@ -55,7 +55,10 @@ def reject_before_intelligence(conn, *, min_lead_score: int | None = None) -> di
           e.source_competence,now(),now()+(%s * interval '1 day'),now()
         FROM cnpj.estabelecimentos e
         LEFT JOIN cnpj.simples s ON s.cnpj_basico=e.cnpj_basico
-        LEFT JOIN cnpj.empresas company ON company.cnpj_basico=e.cnpj_basico
+        -- Durante o ETL incremental, os estabelecimentos chegam antes dos
+        -- arquivos de razão social. Só decida quando o cadastro da empresa já
+        -- estiver disponível; ausência temporária não é rejeição de qualidade.
+        JOIN cnpj.empresas company ON company.cnpj_basico=e.cnpj_basico
         WHERE NOT EXISTS (
           SELECT 1 FROM cnpj.v_prospect_candidates candidate WHERE candidate.cnpj=e.cnpj
         )

@@ -39,6 +39,34 @@ def test_scores_bounded():
         assert 0 <= value <= 100
 
 
+def test_strong_observed_fit_can_reach_70_without_fixed_cnae_list(monkeypatch):
+    monkeypatch.delenv("PROSPECT_PRIORITY_CNAES", raising=False)
+    result = EnrichResult(
+        cnpj="12345678000190",
+        cnpj_basico="12345678",
+        cnae_fiscal_principal="6201501",
+        site_valid=True,
+        email_tipo="corporativo",
+        whatsapp_valid=True,
+        has_catalog=True,
+        has_product_schema=True,
+        has_product_page=True,
+        has_price=True,
+        has_add_to_cart=True,
+        has_cart=True,
+        has_checkout=True,
+        plataforma="shopify",
+        plataforma_confianca=95,
+        sinais={"porte": "05", "opcao_mei": "N", "cnpj_on_site": True},
+    )
+
+    apply_all_scores(result)
+
+    assert result.fit_score >= 70
+    assert result.confidence_score >= 70
+    assert result.lead_score >= 70
+
+
 def test_lead_score_weights():
     result = EnrichResult(
         cnpj="1", cnpj_basico="1", fit_score=80, pain_score=60, confidence_score=40

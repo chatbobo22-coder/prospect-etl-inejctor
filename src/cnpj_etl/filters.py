@@ -30,8 +30,10 @@ FILE_LOAD_ORDER = {
     "Qualificacoes": 5,
     "Motivos": 6,
     "Estabelecimentos": 10,
-    "Empresas": 20,
-    "Simples": 30,
+    # O Simples precisa estar disponível antes da razão social para que o
+    # primeiro lote de empresas já possa excluir MEI e seguir ao funil rápido.
+    "Simples": 20,
+    "Empresas": 30,
     "Socios": 40,
 }
 
