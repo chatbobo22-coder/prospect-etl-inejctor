@@ -14,8 +14,6 @@ QUALIFICATION_VERSION = "v4"
 CORE_INTELLIGENCE_SOURCES = (
     "receita",
     "email_quality",
-    "website",
-    "rdap",
 )
 
 
@@ -475,6 +473,8 @@ def promote_qualified(conn) -> dict[str, int]:
         LEFT JOIN intelligence.tironi_profiles tp ON tp.cnpj=v.cnpj
         LEFT JOIN intelligence.email_verifications ev ON ev.cnpj=v.cnpj
         LEFT JOIN intelligence.company_group_members gm ON gm.cnpj=v.cnpj
+        LEFT JOIN etl.candidate_decisions previous_decision ON previous_decision.cnpj=v.cnpj
+        LEFT JOIN cnpj.prospectos_qualificados previous_prospect ON previous_prospect.cnpj=v.cnpj
         WHERE d.enrich_status IN ('done', 'partial', 'no_site', 'failed')
           AND (
             SELECT count(DISTINCT state.source_code)
@@ -483,8 +483,24 @@ def promote_qualified(conn) -> dict[str, int]:
               AND state.source_code = ANY(%s)
               AND state.status IN ('success', 'no_data', 'skipped')
           ) = %s
+          AND (
+            previous_decision.cnpj IS NULL
+            OR (
+              previous_prospect.cnpj IS NOT NULL
+              AND previous_prospect.qualification_version IS DISTINCT FROM %s
+            )
+            OR previous_decision.evaluated_at < GREATEST(
+              COALESCE(d.updated_at, '-infinity'::timestamptz),
+              COALESCE(ip.updated_at, '-infinity'::timestamptz),
+              COALESCE(ev.checked_at, '-infinity'::timestamptz)
+            )
+          )
         """,
-        (list(CORE_INTELLIGENCE_SOURCES), len(CORE_INTELLIGENCE_SOURCES)),
+        (
+            list(CORE_INTELLIGENCE_SOURCES),
+            len(CORE_INTELLIGENCE_SOURCES),
+            QUALIFICATION_VERSION,
+        ),
     ).fetchall()
 
     columns = [

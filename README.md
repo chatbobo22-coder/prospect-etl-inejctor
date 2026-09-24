@@ -188,18 +188,15 @@ A qualificação v4 mantém permanentemente somente empresas com e-mail válido 
 `A` ou `B`. A leitura da Receita faz primeiro uma triagem barata antes do banco: empresa
 ativa, matriz, e-mail válido, endereço não contábil/fiscal/NFe e pelo menos 12 meses de
 atividade. Por padrão, todos os CNAEs são aceitos; `FILTER_CNAES` pode restringir a carga
-quando houver uma campanha segmentada. Cada execução admite no máximo 4.000 candidatos novos para
-impedir que a área temporária cresça mais rápido do que o enriquecimento.
-O enriquecimento digital usa oito rodadas de 500 registros e a inteligência usa quarenta
-rodadas de 100, mantendo entrada e avaliação no mesmo teto de 4.000 empresas.
+quando houver uma campanha segmentada. O workflow usa lotes sequenciais de até 12.000 candidatos,
+salva o cursor dentro do ZIP e continua automaticamente até esgotar a competência.
 
-O lote temporário é então verificado nas fontes Receita, qualidade técnica do e-mail,
-site institucional, RDAP, CVM e GDELT. Receita, qualidade do e-mail, site e domínio formam
-o núcleo obrigatório. Assim que essas fontes rápidas terminam, os A/B são publicados em
-`outreach.leads`. O GDELT roda depois, em lotes pequenos, somente para leads A/B já
-publicados; portanto indisponibilidade, timeout ou rate limit da fonte nunca segura o
-comercial. Três falhas transitórias consecutivas abrem o circuit breaker e deixam o restante
-para a próxima execução horária. As retentativas usam intervalos de 1h, 6h e 24h.
+O lote temporário passa primeiro por Receita e qualidade técnica do e-mail. Assim que esse
+núcleo confirma um A/B, o contato é marcado como `marketing_ready` e publicado em
+`outreach.leads`. Site institucional, RDAP, CVM, pessoas, presença digital e GDELT continuam
+depois, enriquecendo o CRM sem segurar a campanha. Consultas HTTP usam workers concorrentes,
+o MX é reutilizado por domínio e o perfil comercial é consolidado uma vez por rodada.
+Indisponibilidade, timeout ou rate limit de fonte opcional nunca bloqueiam o comercial.
 
 A decisão compacta fica em `etl.candidate_decisions`; dados brutos e inteligência detalhada
 de rejeitados são apagados ao final da execução. `STRICT_INTELLIGENCE_GATE` permanece

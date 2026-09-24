@@ -116,8 +116,6 @@ def test_only_identity_and_contact_sources_block_publication():
     assert CORE_INTELLIGENCE_SOURCES == (
         "receita",
         "email_quality",
-        "website",
-        "rdap",
     )
 
 

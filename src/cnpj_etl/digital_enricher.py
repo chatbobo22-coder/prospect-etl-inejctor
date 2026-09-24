@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import logging
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from collections.abc import Callable
+from queue import Queue
 from typing import Any
 
 import requests
+import psycopg
 from psycopg import sql
 from psycopg.types.json import Jsonb
 
@@ -48,6 +52,64 @@ log = logging.getLogger(__name__)
 
 ADMIN_QUALIFICATIONS = frozenset({"05", "16", "17", "49"})
 ENRICHMENT_ADVISORY_LOCK = 7262603882
+
+
+def _connection_dsn(conn) -> str | None:
+    try:
+        return conn.info.dsn
+    except AttributeError:
+        return None
+
+
+def _enrich_chunk(dsn: str, rows: list[dict], settings: EnrichSettings, output: Queue):
+    """Executa I/O em paralelo usando uma conexão isolada por worker."""
+    processed = 0
+    try:
+        with psycopg.connect(dsn, connect_timeout=30) as worker_conn:
+            for processed, row in enumerate(rows, start=1):
+                try:
+                    output.put((row, enrich_record(row, worker_conn, settings), None))
+                except Exception as exc:  # persistência fica na thread principal
+                    worker_conn.rollback()
+                    output.put((row, None, exc))
+                if settings.delay_seconds:
+                    time.sleep(settings.delay_seconds)
+    except Exception as exc:
+        for row in rows[processed:]:
+            output.put((row, None, exc))
+    finally:
+        output.put(None)
+
+
+def _enrich_rows(conn, rows: list[dict], settings: EnrichSettings):
+    dsn = _connection_dsn(conn)
+    workers = min(settings.workers, len(rows))
+    if workers <= 1 or not dsn:
+        for row in rows:
+            try:
+                yield row, enrich_record(row, conn, settings), None
+            except Exception as exc:
+                yield row, None, exc
+            if settings.delay_seconds:
+                time.sleep(settings.delay_seconds)
+        return
+
+    chunks = [rows[index::workers] for index in range(workers)]
+    log.info("Enriquecimento paralelo: %s workers para %s candidatos", workers, len(rows))
+    output = Queue()
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="enrich") as executor:
+        futures = [
+            executor.submit(_enrich_chunk, dsn, chunk, settings, output) for chunk in chunks
+        ]
+        finished = 0
+        while finished < workers:
+            item = output.get()
+            if item is None:
+                finished += 1
+            else:
+                yield item
+        for future in futures:
+            future.result()
 
 
 def extract_social_links(html: str, base_url: str | None) -> dict[str, str | None]:
@@ -643,13 +705,18 @@ def run_enrichment(
             enrichment_version=settings.enrichment_version,
         )
         log.info("Enriquecimento digital: %s registros na fila", len(rows))
+        pending_rows = []
         for row in rows:
             cnpj = row["cnpj"]
             if cnpj in processed_cnpjs:
                 continue
             processed_cnpjs.add(cnpj)
+            pending_rows.append(row)
+        for row, result, collect_error in _enrich_rows(conn, pending_rows, settings):
+            cnpj = row["cnpj"]
             try:
-                result = enrich_record(row, conn, settings)
+                if collect_error:
+                    raise collect_error
                 upsert_result(conn, result)
                 stats["processed"] += 1
                 status_key = result.enrich_status if result.enrich_status in stats else "partial"
@@ -688,9 +755,6 @@ def run_enrichment(
                 )
                 conn.commit()
                 log.exception("Falha ao enriquecer %s: %s", cnpj, exc)
-            import time
-
-            time.sleep(settings.delay_seconds)
     finally:
         conn.execute(
             """

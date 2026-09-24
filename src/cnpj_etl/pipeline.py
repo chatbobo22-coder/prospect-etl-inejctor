@@ -179,6 +179,10 @@ def run(
             "VALUES (%s,'running',%s,%s) RETURNING id",
             (competence, len(files), int(workflow_run_id) if workflow_run_id else None),
         ).fetchone()[0]
+        lock_conn.execute(
+            "UPDATE etl.files SET last_run_rows=0 WHERE competence=%s",
+            (competence,),
+        )
         lock_conn.commit()
         total = processed = 0
         file_total = len(files)
@@ -205,14 +209,9 @@ def run(
                     lock_conn.execute(
                         "INSERT INTO etl.files "
                         "(competence,file_name,file_type,source_url,source_size,"
-                        "source_last_modified,status,rows_processed,processed_at) "
-                        "VALUES (%s,%s,%s,%s,%s,%s,'success',0,now()) "
-                        "ON CONFLICT (competence,file_name) DO UPDATE SET "
-                        "source_size=EXCLUDED.source_size,"
-                        "source_last_modified=EXCLUDED.source_last_modified,"
-                        "status='success',rows_processed=0,processed_at=now(),"
-                        "downloaded_bytes=0,scanned_rows=0,skipped_rows=0,activity_at=now(),"
-                        "error_message=NULL",
+                        "source_last_modified,status,rows_processed) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,'pending',0) "
+                        "ON CONFLICT (competence,file_name) DO NOTHING",
                         (
                             competence,
                             remote.name,
@@ -222,15 +221,12 @@ def run(
                             source_last_modified,
                         ),
                     )
-                    processed += 1
-                    lock_conn.execute(
-                        "UPDATE etl.runs SET files_processed=%s,rows_processed=%s WHERE id=%s",
-                        (processed, total, run_id),
-                    )
                     lock_conn.commit()
                     continue
                 existing = lock_conn.execute(
-                    "SELECT status,source_size,source_last_modified FROM etl.files "
+                    "SELECT status,source_size,source_last_modified,rows_processed,scanned_rows,"
+                    "skipped_rows "
+                    "FROM etl.files "
                     "WHERE competence=%s AND file_name=%s",
                     (competence, remote.name),
                 ).fetchone()
@@ -242,9 +238,34 @@ def run(
                         and (source_last_modified is None or existing[2] == source_last_modified)
                     )
                 )
-                if unchanged and not force:
+                completed_establishment = bool(
+                    unchanged
+                    and remote.file_type == "Estabelecimentos"
+                    and int(existing[4] or 0) > 0
+                )
+                if unchanged and (not force or completed_establishment):
                     log.info("Já processado: %s", remote.name)
                     continue
+                resume_row = 0
+                same_source = bool(
+                    existing
+                    and (source_size is None or existing[1] == source_size)
+                    and (source_last_modified is None or existing[2] == source_last_modified)
+                )
+                if (
+                    remote.file_type == "Estabelecimentos"
+                    and same_source
+                    and existing[0] in {"partial", "processing"}
+                ):
+                    resume_row = int(existing[4] or 0)
+                    if resume_row:
+                        log.info(
+                            "[FAST-LEAD] Retomando %s após %s linhas",
+                            remote.name,
+                            f"{resume_row:,}".replace(",", "."),
+                        )
+                previous_loaded = int(existing[3] or 0) if resume_row else 0
+                previous_skipped = int(existing[5] or 0) if resume_row else 0
                 lock_conn.execute(
                     "INSERT INTO etl.files "
                     "(competence,file_name,file_type,source_url,source_size,"
@@ -253,8 +274,8 @@ def run(
                     "ON CONFLICT (competence,file_name) DO UPDATE SET "
                     "source_size=EXCLUDED.source_size, "
                     "source_last_modified=EXCLUDED.source_last_modified, "
-                    "status='downloading',downloaded_bytes=0,scanned_rows=0,"
-                    "skipped_rows=0,activity_at=now(),error_message=NULL",
+                    "status='downloading',downloaded_bytes=0,rows_processed=%s,scanned_rows=%s,"
+                    "skipped_rows=%s,last_run_rows=0,activity_at=now(),error_message=NULL",
                     (
                         competence,
                         remote.name,
@@ -262,6 +283,9 @@ def run(
                         remote.url,
                         source_size,
                         source_last_modified,
+                        previous_loaded,
+                        resume_row,
+                        previous_skipped,
                     ),
                 )
                 lock_conn.commit()
@@ -286,7 +310,13 @@ def run(
                             "UPDATE etl.files SET rows_processed=%s,scanned_rows=%s,"
                             "skipped_rows=%s,activity_at=now() "
                             "WHERE competence=%s AND file_name=%s",
-                            (matched, scanned, skipped, competence, remote.name),
+                            (
+                                previous_loaded + matched,
+                                scanned,
+                                previous_skipped + skipped,
+                                competence,
+                                remote.name,
+                            ),
                         )
                         lock_conn.execute(
                             "UPDATE etl.runs SET rows_processed=%s WHERE id=%s",
@@ -304,6 +334,8 @@ def run(
                         filter_ctx=filter_ctx,
                         log_progress_every=settings.log_progress_every,
                         progress_callback=report_load_progress,
+                        start_row=resume_row,
+                        stop_at_candidate_limit=remote.file_type == "Estabelecimentos",
                     )
 
                 log.info("Baixando %s …", remote.name)
@@ -337,23 +369,44 @@ def run(
                     ):
                         rows = ingest(path, sha256, size)
 
+                rows_loaded = int(rows)
+                file_status = "success" if rows.completed else "partial"
                 lock_conn.execute(
-                    "UPDATE etl.files SET status='success',rows_processed=%s,processed_at=now(),"
+                    "UPDATE etl.files SET status=%s,rows_processed=%s,"
+                    "scanned_rows=%s,skipped_rows=%s,"
+                    "last_run_rows=%s,"
+                    "processed_at=CASE WHEN %s='success' THEN now() ELSE NULL END,"
                     "activity_at=now() "
                     "WHERE competence=%s AND file_name=%s",
-                    (rows, competence, remote.name),
+                    (
+                        file_status,
+                        previous_loaded + rows_loaded,
+                        rows.scanned_rows,
+                        previous_skipped + rows.skipped_rows,
+                        rows_loaded,
+                        file_status,
+                        competence,
+                        remote.name,
+                    ),
                 )
-                processed += 1
-                total += rows
+                if rows.completed:
+                    processed += 1
+                total += rows_loaded
                 lock_conn.execute(
                     "UPDATE etl.runs SET files_processed=%s,rows_processed=%s WHERE id=%s",
                     (processed, total, run_id),
                 )
                 lock_conn.commit()
-                log.info("Concluído %s (%s linhas)", remote.name, rows)
+                log.info(
+                    "%s %s (%s linhas; cursor %s)",
+                    "Concluído" if rows.completed else "Lote preenchido em",
+                    remote.name,
+                    rows_loaded,
+                    f"{rows.scanned_rows:,}".replace(",", "."),
+                )
                 if after_file:
                     try:
-                        after_file(lock_conn, remote, rows)
+                        after_file(lock_conn, remote, rows_loaded)
                     except Exception:
                         lock_conn.rollback()
                         log.exception(

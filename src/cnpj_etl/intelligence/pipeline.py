@@ -6,8 +6,11 @@ from datetime import timedelta
 import hashlib
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable
+from queue import Queue
 
+import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
@@ -19,6 +22,69 @@ log = logging.getLogger(__name__)
 INTELLIGENCE_LOCK = 7_262_603_882
 
 
+def _connection_dsn(conn) -> str | None:
+    try:
+        return conn.info.dsn
+    except AttributeError:
+        return None
+
+
+def _collect_chunk(
+    dsn: str,
+    source_code: str,
+    companies: list[dict],
+    settings: IntelligenceSettings,
+    output: Queue,
+):
+    processed = 0
+    try:
+        with psycopg.connect(dsn, connect_timeout=30) as worker_conn:
+            for processed, company in enumerate(companies, start=1):
+                try:
+                    result = collect_source(source_code, worker_conn, company, settings)
+                    output.put((company, result, None))
+                except Exception as exc:
+                    worker_conn.rollback()
+                    output.put((company, None, exc))
+                if settings.delay_seconds:
+                    time.sleep(settings.delay_seconds)
+    except Exception as exc:
+        for company in companies[processed:]:
+            output.put((company, None, exc))
+    finally:
+        output.put(None)
+
+
+def _collect_companies(conn, source_code, companies, settings):
+    dsn = _connection_dsn(conn)
+    workers = min(settings.workers, len(companies))
+    if source_code not in settings.concurrent_sources or workers <= 1 or not dsn:
+        for company in companies:
+            try:
+                yield company, collect_source(source_code, conn, company, settings), None
+            except Exception as exc:
+                yield company, None, exc
+        return
+
+    chunks = [companies[index::workers] for index in range(workers)]
+    log.info("Inteligência %s em paralelo: %s workers", source_code, workers)
+    output = Queue()
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=source_code) as executor:
+        futures = [
+            executor.submit(_collect_chunk, dsn, source_code, chunk, settings, output)
+            for chunk in chunks
+        ]
+        finished = 0
+        while finished < workers:
+            item = output.get()
+            if item is None:
+                finished += 1
+            else:
+                yield item
+        for future in futures:
+            future.result()
+
+
 def run_intelligence(
     conn, settings: IntelligenceSettings | None = None, *, force: bool = False
 ) -> dict:
@@ -27,6 +93,7 @@ def run_intelligence(
         return {"locked": 1, "processed": 0}
     totals = {"processed": 0, "success": 0, "no_data": 0, "failed": 0, "skipped": 0}
     per_source: dict[str, dict] = {}
+    changed_cnpjs: set[str] = set()
     try:
         available = {item["source_code"]: item for item in list_sources(conn)}
         unknown = sorted(set(settings.sources) - set(available))
@@ -37,6 +104,18 @@ def run_intelligence(
             per_source[source_code] = stats
             for key in totals:
                 totals[key] += stats.get(key, 0)
+            changed_cnpjs.update(stats.get("processed_cnpjs", ()))
+        for index, cnpj in enumerate(sorted(changed_cnpjs), start=1):
+            refresh_profile(conn, cnpj)
+            if index % settings.profile_commit_batch_size == 0:
+                conn.commit()
+                log.info(
+                    "Perfis consolidados: %s/%s",
+                    index,
+                    len(changed_cnpjs),
+                )
+        if changed_cnpjs:
+            conn.commit()
         refresh_company_groups(conn)
         totals["sources"] = per_source
         return totals
@@ -86,6 +165,7 @@ def _run_source(conn, source_code: str, settings: IntelligenceSettings, *, force
         "failed": 0,
         "skipped": 0,
         "circuit_open": 0,
+        "processed_cnpjs": [],
     }
     try:
         batch_size = (
@@ -104,13 +184,18 @@ def _run_source(conn, source_code: str, settings: IntelligenceSettings, *, force
         )
         log.info("Inteligência %s: %s empresas", source_code, len(companies))
         consecutive_errors = 0
-        for company in companies:
+        concurrent = source_code in settings.concurrent_sources and settings.workers > 1
+        for company, collected_result, collect_error in _collect_companies(
+            conn, source_code, companies, settings
+        ):
             cnpj = company["cnpj"]
             _mark_running(conn, cnpj, source_code)
             try:
-                result = collect_source(source_code, conn, company, settings)
+                if collect_error:
+                    raise collect_error
+                result = collected_result
                 _persist_result(conn, cnpj, result)
-                refresh_profile(conn, cnpj)
+                stats["processed_cnpjs"].append(cnpj)
                 stats["processed"] += 1
                 stats[result.status] = stats.get(result.status, 0) + 1
                 conn.execute(
@@ -153,12 +238,13 @@ def _run_source(conn, source_code: str, settings: IntelligenceSettings, *, force
                 conn.commit()
                 consecutive_errors += 1
                 log.warning("Fonte %s falhou para %s: %s", source_code, cnpj, exc)
-            delay_seconds = (
-                max(settings.delay_seconds, settings.gdelt_delay_seconds)
-                if source_code == "gdelt"
-                else settings.delay_seconds
-            )
-            time.sleep(delay_seconds)
+            if not concurrent:
+                delay_seconds = (
+                    max(settings.delay_seconds, settings.gdelt_delay_seconds)
+                    if source_code == "gdelt"
+                    else settings.delay_seconds
+                )
+                time.sleep(delay_seconds)
             if (
                 source_code == "gdelt"
                 and consecutive_errors >= settings.gdelt_circuit_breaker_errors

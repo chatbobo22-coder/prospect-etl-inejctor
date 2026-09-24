@@ -301,30 +301,46 @@ def main():
                 )
 
             configured_intelligence = IntelligenceSettings()
-            fast_sources = tuple(
-                source for source in configured_intelligence.sources if source != "gdelt"
+            core_sources = tuple(
+                source
+                for source in CORE_INTELLIGENCE_SOURCES
+                if source in configured_intelligence.sources
+            )
+            deferred_sources = tuple(
+                source
+                for source in configured_intelligence.sources
+                if source not in CORE_INTELLIGENCE_SOURCES and source != "gdelt"
             )
             slow_sources = tuple(
                 source for source in configured_intelligence.sources if source == "gdelt"
             )
-            fast_stats = (
+            core_stats = (
                 run_intelligence_until_empty(
                     conn,
-                    replace(configured_intelligence, sources=fast_sources),
+                    replace(configured_intelligence, sources=core_sources),
                     after_round=publish_round,
                 )
-                if fast_sources
+                if core_sources
                 else {"processed": 0, "rounds": 0}
             )
-            # Publica assim que as fontes essenciais/rápidas terminam. GDELT é opcional,
-            # limitado e executado depois para nunca segurar a fila comercial.
-            qualify_fast = promote_qualified(conn)
-            synced_fast = sync_qualified_leads(conn)
+            # Receita + validade técnica do e-mail bastam para publicar. As
+            # demais fontes aprofundam o CRM sem segurar a fila de marketing.
+            qualify_core = promote_qualified(conn)
+            synced_core = sync_qualified_leads(conn)
             logging.info(
-                "Via rápida publicada: intelligence=%s qualify=%s outreach=%s",
-                fast_stats,
-                qualify_fast,
-                synced_fast,
+                "Leads prontos para marketing publicados: intelligence=%s qualify=%s outreach=%s",
+                core_stats,
+                qualify_core,
+                synced_core,
+            )
+            deferred_stats = (
+                run_intelligence_until_empty(
+                    conn,
+                    replace(configured_intelligence, sources=deferred_sources),
+                    after_round=publish_round,
+                )
+                if deferred_sources
+                else {"processed": 0, "rounds": 0}
             )
             slow_stats = (
                 run_intelligence(
@@ -334,7 +350,11 @@ def main():
                 if slow_sources
                 else {"processed": 0}
             )
-            intelligence_stats = {"fast": fast_stats, "optional": slow_stats}
+            intelligence_stats = {
+                "core": core_stats,
+                "deferred": deferred_stats,
+                "optional": slow_stats,
+            }
             qualify_stats = promote_qualified(conn)
             synced = sync_qualified_leads(conn)
             retention_stats = prune_evaluated_candidates(conn)

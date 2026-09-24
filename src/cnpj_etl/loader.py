@@ -17,6 +17,24 @@ log = logging.getLogger(__name__)
 MIN_RETRY_CHUNK_SIZE = 500
 
 
+class LoadResult(int):
+    """Quantidade gravada com cursor e indicação de fim do arquivo."""
+
+    def __new__(
+        cls,
+        rows_loaded: int,
+        *,
+        scanned_rows: int,
+        skipped_rows: int,
+        completed: bool,
+    ):
+        value = int.__new__(cls, rows_loaded)
+        value.scanned_rows = scanned_rows
+        value.skipped_rows = skipped_rows
+        value.completed = completed
+        return value
+
+
 def clean(value: str):
     value = value.strip()
     return value or None
@@ -173,7 +191,9 @@ def load_zip(
     filter_ctx=None,
     log_progress_every: int = 50000,
     progress_callback: Callable[[int, int, int], None] | None = None,
-) -> int:
+    start_row: int = 0,
+    stop_at_candidate_limit: bool = False,
+) -> LoadResult:
     table, columns = DATASETS[kind]
     conflict = (
         "cnpj"
@@ -186,6 +206,7 @@ def load_zip(
     )
     display_name = label or getattr(zip_path, "name", str(zip_path))
     count = skipped = scanned = 0
+    stopped_early = False
     chunk: list[dict] = []
     log.info("%s: iniciando leitura (%s → cnpj.%s)", display_name, kind, table)
     with ZipFile(zip_path) as archive:
@@ -200,6 +221,8 @@ def load_zip(
         ):
             for row in csv.reader(text, delimiter=";", quotechar='"'):
                 scanned += 1
+                if scanned <= start_row:
+                    continue
                 item = transform(kind, row, columns, competence)
                 if not should_load_row(kind, item, filter_ctx):
                     skipped += 1
@@ -211,6 +234,15 @@ def load_zip(
                         flush_chunk(conn, table, chunk, conflict, kind=kind, label=display_name)
                         count += len(chunk)
                         chunk.clear()
+                    if (
+                        stop_at_candidate_limit
+                        and kind == "Estabelecimentos"
+                        and filter_ctx
+                        and filter_ctx.max_candidates > 0
+                        and len(filter_ctx.selected_cnpjs) >= filter_ctx.max_candidates
+                    ):
+                        stopped_early = True
+                        break
                 if scanned % log_progress_every == 0:
                     matched = count + len(chunk)
                     pct = (matched / scanned * 100) if scanned else 0
@@ -237,4 +269,9 @@ def load_zip(
     )
     if progress_callback:
         progress_callback(scanned, count, skipped)
-    return count
+    return LoadResult(
+        count,
+        scanned_rows=scanned,
+        skipped_rows=skipped,
+        completed=not stopped_early,
+    )

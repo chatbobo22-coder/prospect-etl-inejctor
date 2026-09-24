@@ -24,6 +24,7 @@ SITE_SOURCES = frozenset(
 @dataclass
 class EnrichSettings:
     batch_size: int = int(os.getenv("ENRICH_BATCH_SIZE", "300"))
+    workers: int = max(1, int(os.getenv("ENRICH_WORKERS", "1")))
     request_timeout: int = int(os.getenv("ENRICH_REQUEST_TIMEOUT", "15"))
     connect_timeout: int = int(os.getenv("ENRICH_CONNECT_TIMEOUT", "5"))
     delay_seconds: float = float(os.getenv("ENRICH_DELAY_SECONDS", "0.5"))

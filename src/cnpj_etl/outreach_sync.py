@@ -32,6 +32,8 @@ def sync_qualified_leads(conn, *, commit: bool = True) -> int:
           COALESCE(t.tironi_score, p.lead_score),
           p.confidence_score,
           to_jsonb(p) || jsonb_build_object(
+            'marketing_ready', true,
+            'marketing_ready_at', COALESCE(p.qualified_at, now()),
             'tironi_score', t.tironi_score,
             'tironi_classification', t.classification,
             'why_this_lead', t.why_this_lead,
@@ -61,6 +63,27 @@ def sync_qualified_leads(conn, *, commit: bool = True) -> int:
           source_payload = EXCLUDED.source_payload,
           source = EXCLUDED.source,
           updated_at = now()
+        WHERE (
+          outreach.leads.company_name,
+          outreach.leads.trade_name,
+          outreach.leads.email,
+          outreach.leads.phone,
+          outreach.leads.whatsapp,
+          outreach.leads.contact_role,
+          outreach.leads.lead_score,
+          outreach.leads.confidence_score,
+          outreach.leads.source_payload
+        ) IS DISTINCT FROM (
+          EXCLUDED.company_name,
+          EXCLUDED.trade_name,
+          EXCLUDED.email,
+          EXCLUDED.phone,
+          EXCLUDED.whatsapp,
+          EXCLUDED.contact_role,
+          EXCLUDED.lead_score,
+          EXCLUDED.confidence_score,
+          EXCLUDED.source_payload
+        )
         """
     )
     if commit:

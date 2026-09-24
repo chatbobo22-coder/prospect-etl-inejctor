@@ -29,6 +29,8 @@ def test_sync_only_publishes_qualified_ab_leads():
     assert "ON CONFLICT (cnpj) DO UPDATE" in conn.query
     assert "p.whatsapp_url" in conn.query
     assert "whatsapp = EXCLUDED.whatsapp" in conn.query
+    assert "'marketing_ready', true" in conn.query
+    assert "IS DISTINCT FROM" in conn.query
 
 
 def test_sync_can_share_an_outer_transaction():

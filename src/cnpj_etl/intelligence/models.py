@@ -39,10 +39,20 @@ def _configured_sources() -> tuple[str, ...]:
 @dataclass(frozen=True)
 class IntelligenceSettings:
     batch_size: int = int(os.getenv("INTELLIGENCE_BATCH_SIZE", "100"))
+    workers: int = max(1, int(os.getenv("INTELLIGENCE_WORKERS", "1")))
+    concurrent_sources: tuple[str, ...] = field(
+        default_factory=lambda: _csv_env(
+            "INTELLIGENCE_CONCURRENT_SOURCES",
+            "email_quality,website,rdap",
+        )
+    )
     sources: tuple[str, ...] = field(default_factory=_configured_sources)
     request_timeout: int = int(os.getenv("INTELLIGENCE_REQUEST_TIMEOUT", "15"))
     max_rounds: int = int(os.getenv("INTELLIGENCE_MAX_ROUNDS", "40"))
     delay_seconds: float = float(os.getenv("INTELLIGENCE_DELAY_SECONDS", "0.25"))
+    profile_commit_batch_size: int = max(
+        1, int(os.getenv("INTELLIGENCE_COMMIT_BATCH_SIZE", "50"))
+    )
     min_lead_score: int = int(
         os.getenv(
             "INTELLIGENCE_ENTRY_MIN_SCORE",

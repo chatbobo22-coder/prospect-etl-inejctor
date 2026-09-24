@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 import dns.exception
 import dns.resolver
 
@@ -22,6 +24,26 @@ DISPOSABLE_DOMAINS = frozenset(
         "yopmail.com",
     }
 )
+
+
+@lru_cache(maxsize=20_000)
+def _resolve_mx(domain: str, timeout_seconds: int) -> tuple[bool | None, tuple[str, ...], str | None]:
+    """Resolve MX uma vez por domínio durante a execução do worker."""
+    resolver = dns.resolver.Resolver(configure=True)
+    resolver.timeout = min(float(timeout_seconds), 5.0)
+    resolver.lifetime = float(timeout_seconds)
+    try:
+        answers = resolver.resolve(domain, "MX")
+        hosts = tuple(sorted({str(answer.exchange).rstrip(".").lower() for answer in answers}))
+        return bool(hosts), hosts, None
+    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+        return False, (), None
+    except (dns.resolver.NoNameservers, dns.exception.Timeout) as exc:
+        return None, (), exc.__class__.__name__
+
+
+def clear_mx_cache() -> None:
+    _resolve_mx.cache_clear()
 
 
 def verify_email(email: str | None, timeout: float = 5.0) -> dict:
@@ -50,22 +72,12 @@ def verify_email(email: str | None, timeout: float = 5.0) -> dict:
     if role == "blocked_backoffice":
         reasons.append("blocked_backoffice_role")
 
-    resolver = dns.resolver.Resolver(configure=True)
-    resolver.timeout = min(timeout, 5.0)
-    resolver.lifetime = timeout
-    mx_hosts: list[str] = []
-    mx_valid: bool | None = None
-    error: str | None = None
-    try:
-        answers = resolver.resolve(domain, "MX")
-        mx_hosts = sorted({str(answer.exchange).rstrip(".").lower() for answer in answers})
-        mx_valid = bool(mx_hosts)
-    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
-        mx_valid = False
+    timeout_seconds = max(1, min(30, round(timeout)))
+    mx_valid, cached_hosts, error = _resolve_mx(domain, timeout_seconds)
+    mx_hosts = list(cached_hosts)
+    if mx_valid is False:
         reasons.append("no_mx")
-    except (dns.resolver.NoNameservers, dns.exception.Timeout) as exc:
-        mx_valid = None
-        error = exc.__class__.__name__
+    elif mx_valid is None:
         reasons.append("mx_check_unavailable")
 
     if disposable or mx_valid is False or role == "blocked_backoffice":
