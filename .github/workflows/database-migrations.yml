@@ -12,7 +12,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: cnpj-database-migrations
+  # Compartilha a trava com ETL/enriquecimento para impedir DDL e carga simultâneos.
+  group: cnpj-enrichment-write
   cancel-in-progress: false
 
 jobs:

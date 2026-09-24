@@ -1,9 +1,18 @@
 import logging
+import time
 from pathlib import Path
 
 import psycopg
 
 log = logging.getLogger(__name__)
+
+MIGRATION_LOCK_ID = 7_262_603_882
+MIGRATION_MAX_ATTEMPTS = 5
+MIGRATION_RETRY_BASE_SECONDS = 0.5
+RETRYABLE_TRANSACTION_ERRORS = (
+    psycopg.errors.DeadlockDetected,
+    psycopg.errors.SerializationFailure,
+)
 
 
 class Database:
@@ -25,14 +34,38 @@ class Database:
 
     def migrate(self, sql_dir: Path):
         with self.connect() as conn:
+            conn.execute("SELECT pg_advisory_lock(%s)", (MIGRATION_LOCK_ID,))
             for path in sorted(sql_dir.glob("*.sql")):
-                conn.execute(path.read_text(encoding="utf-8"))
-            conn.commit()
+                self._execute_migration(conn, path)
 
     def migrate_file(self, path: Path):
         with self.connect() as conn:
-            conn.execute(path.read_text(encoding="utf-8"))
-            conn.commit()
+            conn.execute("SELECT pg_advisory_lock(%s)", (MIGRATION_LOCK_ID,))
+            self._execute_migration(conn, path)
+
+    def _execute_migration(self, conn, path: Path):
+        """Executa um arquivo em transação curta e repete conflitos transitórios."""
+        sql = path.read_text(encoding="utf-8")
+        for attempt in range(1, MIGRATION_MAX_ATTEMPTS + 1):
+            try:
+                conn.execute(sql)
+                conn.commit()
+                return
+            except RETRYABLE_TRANSACTION_ERRORS as exc:
+                conn.rollback()
+                if attempt == MIGRATION_MAX_ATTEMPTS:
+                    raise
+                delay = MIGRATION_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
+                log.warning(
+                    "Conflito transitório na migration %s (%s). "
+                    "Nova tentativa %s/%s em %.1fs.",
+                    path.name,
+                    exc.sqlstate or type(exc).__name__,
+                    attempt + 1,
+                    MIGRATION_MAX_ATTEMPTS,
+                    delay,
+                )
+                time.sleep(delay)
 
     def reset_load(self, conn):
         conn.execute(

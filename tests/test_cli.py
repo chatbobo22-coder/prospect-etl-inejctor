@@ -1,3 +1,4 @@
+import psycopg
 import pytest
 
 import cnpj_etl.cli as cli
@@ -47,8 +48,8 @@ def test_migrate_file_executes_only_selected_sql(tmp_path):
         def __exit__(self, *_):
             return None
 
-        def execute(self, query):
-            self.queries.append(query)
+        def execute(self, query, params=None):
+            self.queries.append((query, params))
 
         def commit(self):
             self.committed = True
@@ -59,5 +60,48 @@ def test_migrate_file_executes_only_selected_sql(tmp_path):
 
     database.migrate_file(migration)
 
-    assert connection.queries == ["SELECT 1;"]
+    assert connection.queries == [
+        ("SELECT pg_advisory_lock(%s)", (7_262_603_882,)),
+        ("SELECT 1;", None),
+    ]
     assert connection.committed is True
+
+
+def test_migrate_file_retries_a_deadlock(tmp_path, monkeypatch):
+    migration = tmp_path / "018_retry.sql"
+    migration.write_text("SELECT 1;", encoding="utf-8")
+
+    class FakeConnection:
+        def __init__(self):
+            self.migration_attempts = 0
+            self.commits = 0
+            self.rollbacks = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def execute(self, query, params=None):
+            if query == "SELECT 1;":
+                self.migration_attempts += 1
+                if self.migration_attempts == 1:
+                    raise psycopg.errors.DeadlockDetected("deadlock detected")
+
+        def commit(self):
+            self.commits += 1
+
+        def rollback(self):
+            self.rollbacks += 1
+
+    connection = FakeConnection()
+    database = Database("postgresql://unused")
+    database.connect = lambda: connection
+    monkeypatch.setattr("cnpj_etl.database.time.sleep", lambda _: None)
+
+    database.migrate_file(migration)
+
+    assert connection.migration_attempts == 2
+    assert connection.rollbacks == 1
+    assert connection.commits == 1

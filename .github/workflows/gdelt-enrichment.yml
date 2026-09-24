@@ -7,7 +7,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: gdelt-optional-enrichment
+  # O comando também executa migrations antes do lote; serialize todas as escritas.
+  group: cnpj-enrichment-write
   cancel-in-progress: false
 
 jobs:
