@@ -166,3 +166,39 @@ def test_verified_multisource_company_can_be_quality_b_without_news():
     assert profile["data_confidence_score"] >= 6
     assert profile["profile_score"] >= 35
     assert profile["profile_quality"] == "B"
+
+
+def test_professional_presence_reinforces_profile_without_becoming_a_penalty():
+    now = datetime.now(timezone.utc)
+    base = [
+        {
+            "category": "fit",
+            "score": 20,
+            "confidence": 100,
+            "title": "Fit",
+            "source_code": "receita",
+            "observed_at": now,
+        }
+    ]
+    states = [{"source_code": "receita", "status": "success"}]
+
+    without_presence = calculate_profile(base, [], states)
+    with_presence = calculate_profile(
+        base
+        + [
+            {
+                "category": "presence",
+                "score": 10,
+                "confidence": 90,
+                "title": "LinkedIn corporativo",
+                "source_code": "prospeo",
+                "observed_at": now,
+            }
+        ],
+        [],
+        states + [{"source_code": "prospeo", "status": "success"}],
+    )
+
+    assert without_presence["presence_score"] == 0
+    assert with_presence["presence_score"] == 9
+    assert with_presence["profile_score"] > without_presence["profile_score"]

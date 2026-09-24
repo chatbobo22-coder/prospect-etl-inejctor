@@ -51,12 +51,51 @@ Pessoas recebem prioridade explícita: fundador, administrador, executivo, sóci
 funcionário. Plataformas de comércio e atendimento detectadas passam a ser armazenadas como
 tecnologias estruturadas no perfil.
 
+## Pessoas e presença profissional
+
+As integrações opcionais `apollo`, `prospeo` e `hunter` usam somente APIs oficiais. Elas não
+raspam páginas do LinkedIn. As URLs públicas retornadas pelos provedores são guardadas como
+evidência, junto com nome, cargo, senioridade, e-mail profissional verificado e telefone quando
+essa opção for explicitamente habilitada.
+
+Configure uma ou mais chaves:
+
+```ini
+APOLLO_API_KEY=
+PROSPEO_API_KEY=
+HUNTER_API_KEY=
+PEOPLE_PROVIDER_BATCH_SIZE=10
+PEOPLE_PROVIDER_LIMIT=3
+PEOPLE_PROVIDER_REVEAL_EMAILS=true
+PEOPLE_PROVIDER_REVEAL_PHONES=false
+```
+
+Quando `INTELLIGENCE_SOURCES` não é informado, cada provedor é ativado automaticamente somente
+se sua chave existir. No GitHub Actions, as três chaves devem ser cadastradas como Repository
+Secrets com os nomes acima.
+
+Os sinais profissionais reforçam o perfil de forma auditável:
+
+- página corporativa e presença multicanal: até 10 pontos de `presence_score`;
+- quantidade estimada de funcionários e captação: reforço de capacidade;
+- vagas abertas e crescimento do quadro: reforço de intenção recente;
+- decisores encontrados: aumenta cobertura e confiança dos dados.
+
+Na publicação, esses sinais geram um bônus auditável de até 20 pontos sobre o score digital:
+presença entra integralmente; capacidade e intenção entram com peso de 25%; e decisores somam até
+4 pontos. O resultado final nunca ultrapassa 100. O score digital original, o bônus e o resultado
+final ficam registrados em `sinais.intelligence_profile`.
+
+Ausência de resultado ou indisponibilidade de um fornecedor não reduz o score. Telefones ficam
+desabilitados por padrão porque consomem muito mais créditos que e-mails.
+
 ## Pontuação
 
-O perfil soma cinco dimensões: aderência (25), capacidade (20), intenção (25), dor/oportunidade
-(20) e confiança dos dados (10). Qualidade A exige pelo menos 75 pontos, boa cobertura de fontes e
-um sinal de intenção recente. Qualidade B exige pelo menos 60 pontos e confiança mínima. Sinais
-expirados deixam de pontuar automaticamente.
+O perfil soma aderência (25), capacidade (20), intenção (25), dor/oportunidade (20), presença
+profissional (10) e confiança dos dados (10), com resultado final limitado a 100. Qualidade A
+exige pelo menos 65 pontos, boa cobertura de fontes e um sinal de intenção recente. Qualidade B
+exige pelo menos 35 pontos e confiança mínima. A publicação comercial continua obedecendo ao
+gate digital configurado (70 por padrão). Sinais expirados deixam de pontuar automaticamente.
 
 ## Execução
 

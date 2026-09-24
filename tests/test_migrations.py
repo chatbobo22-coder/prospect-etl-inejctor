@@ -97,3 +97,12 @@ def test_rejected_contact_archive_keeps_only_compact_contact_fields():
     for field in ("razao_social", "nome_fantasia", "telefone", "email", "lead_score"):
         assert field in text
     assert "WHERE decision = 'rejected'" in text
+
+
+def test_professional_network_migration_registers_sources_and_presence_score():
+    sql_dir = Path(__file__).resolve().parents[1] / "sql"
+    text = (sql_dir / "019_professional_network_intelligence.sql").read_text(encoding="utf-8")
+    for source in ("apollo", "prospeo", "hunter"):
+        assert f"('{source}'" in text
+    assert "ADD COLUMN IF NOT EXISTS presence_score" in text
+    assert "CREATE OR REPLACE VIEW intelligence.v_commercial_profiles" in text

@@ -473,6 +473,216 @@ def collect_cvm(_: object, company: dict, settings: IntelligenceSettings) -> Sou
     return SourceResult("cvm", signals=[signal], metadata={"cvm_code": record.get("CD_CVM")})
 
 
+def collect_apollo(_: object, company: dict, settings: IntelligenceSettings) -> SourceResult:
+    """Busca decisores e sinais empresariais pela API oficial da Apollo."""
+    if not settings.apollo_api_key:
+        return SourceResult("apollo", status="skipped", metadata={"reason": "missing_api_key"})
+    domain = _company_domain(company)
+    if not domain:
+        return SourceResult("apollo", status="no_data", metadata={"reason": "no_domain"})
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "x-api-key": settings.apollo_api_key,
+    }
+    response = requests.post(
+        "https://api.apollo.io/api/v1/mixed_people/api_search",
+        headers=headers,
+        params=[
+            ("q_organization_domains_list[]", domain),
+            *(("person_seniorities[]", value) for value in (
+                "owner", "founder", "c_suite", "partner", "vp", "head", "director", "manager"
+            )),
+            ("page", 1),
+            ("per_page", max(1, min(settings.provider_people_limit, 10))),
+        ],
+        timeout=settings.request_timeout,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    rows = payload.get("people") or []
+    people: list[Person] = []
+    company_profile: dict = {}
+    for item in rows[: settings.provider_people_limit]:
+        enriched = item
+        if settings.reveal_provider_emails:
+            params = {
+                "name": item.get("name") or _join_name(item),
+                "domain": domain,
+                "reveal_personal_emails": "false",
+                "reveal_phone_number": "false",
+            }
+            detail = requests.post(
+                "https://api.apollo.io/api/v1/people/match",
+                headers=headers,
+                params={key: value for key, value in params.items() if value},
+                timeout=settings.request_timeout,
+            )
+            if detail.status_code == 200:
+                enriched = detail.json().get("person") or item
+            elif detail.status_code not in {400, 404, 422}:
+                detail.raise_for_status()
+        person = _apollo_person(enriched)
+        if person:
+            people.append(person)
+        company_profile = company_profile or enriched.get("organization") or item.get("organization") or {}
+    signals = _professional_company_signals(company_profile, "apollo")
+    return SourceResult(
+        "apollo",
+        people=_deduplicate_people(people),
+        signals=signals,
+        status="success" if people or signals else "no_data",
+        metadata={
+            "domain": domain,
+            "people_found": len(people),
+            "company": _public_company_metadata(company_profile),
+            "contact_reveal_enabled": settings.reveal_provider_emails,
+            "phone_reveal_enabled": False,
+        },
+    )
+
+
+def collect_prospeo(conn, company: dict, settings: IntelligenceSettings) -> SourceResult:
+    """Enriquece empresa e pessoas conhecidas pela API oficial da Prospeo."""
+    if not settings.prospeo_api_key:
+        return SourceResult("prospeo", status="skipped", metadata={"reason": "missing_api_key"})
+    domain = _company_domain(company)
+    company_linkedin = company.get("linkedin_url")
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "X-KEY": settings.prospeo_api_key,
+    }
+    company_data = {
+        "company_website": domain,
+        "company_linkedin_url": company_linkedin,
+        "company_name": company.get("nome_fantasia") or company.get("razao_social"),
+    }
+    company_data = {key: value for key, value in company_data.items() if value}
+    company_profile: dict = {}
+    if company_data:
+        response = requests.post(
+            "https://api.prospeo.io/enrich-company",
+            headers=headers,
+            json={"data": company_data},
+            timeout=settings.request_timeout,
+        )
+        if response.status_code == 200:
+            payload = response.json()
+            if not payload.get("error"):
+                company_profile = payload.get("company") or {}
+        elif response.status_code not in {400, 404, 422}:
+            response.raise_for_status()
+
+    known_people = _known_people(conn, company["cnpj"], settings.provider_people_limit)
+    people: list[Person] = []
+    if settings.reveal_provider_emails:
+        for known in known_people:
+            identity = {
+                "full_name": known.get("full_name"),
+                "linkedin_url": known.get("linkedin_url"),
+                "company_name": company.get("nome_fantasia") or company.get("razao_social"),
+                "company_website": domain,
+                "company_linkedin_url": company_profile.get("linkedin_url") or company_linkedin,
+            }
+            identity = {key: value for key, value in identity.items() if value}
+            response = requests.post(
+                "https://api.prospeo.io/enrich-person",
+                headers=headers,
+                json={
+                    "only_verified_email": True,
+                    "enrich_mobile": settings.reveal_provider_phones,
+                    "data": identity,
+                },
+                timeout=settings.request_timeout,
+            )
+            if response.status_code != 200:
+                if response.status_code not in {400, 404, 422}:
+                    response.raise_for_status()
+                continue
+            payload = response.json()
+            person = _prospeo_person(payload.get("person") or {}) if not payload.get("error") else None
+            if person:
+                people.append(person)
+                company_profile = company_profile or payload.get("company") or {}
+    signals = _professional_company_signals(company_profile, "prospeo")
+    return SourceResult(
+        "prospeo",
+        people=_deduplicate_people(people),
+        signals=signals,
+        status="success" if people or signals else "no_data",
+        metadata={
+            "domain": domain,
+            "people_considered": len(known_people),
+            "people_enriched": len(people),
+            "company": _public_company_metadata(company_profile),
+            "phone_reveal_enabled": settings.reveal_provider_phones,
+        },
+    )
+
+
+def collect_hunter(_: object, company: dict, settings: IntelligenceSettings) -> SourceResult:
+    """Obtém contatos profissionais validados por domínio usando Hunter."""
+    if not settings.hunter_api_key:
+        return SourceResult("hunter", status="skipped", metadata={"reason": "missing_api_key"})
+    domain = _company_domain(company)
+    if not domain:
+        return SourceResult("hunter", status="no_data", metadata={"reason": "no_domain"})
+    response = requests.get(
+        "https://api.hunter.io/v2/domain-search",
+        params={
+            "domain": domain,
+            "api_key": settings.hunter_api_key,
+            "decision_maker": "true",
+            "limit": max(1, min(settings.provider_people_limit, 10)),
+            "aggregations": "true",
+        },
+        timeout=settings.request_timeout,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    data = payload.get("data") or {}
+    people = [
+        person
+        for item in data.get("emails") or []
+        if (person := _hunter_person(item)) is not None
+    ]
+    aggregations = (payload.get("meta") or {}).get("aggregations") or {}
+    company_profile = {
+        "name": data.get("organization"),
+        "domain": data.get("domain"),
+        "linkedin_url": data.get("linkedin"),
+        "industry": data.get("industry"),
+        "employee_count": data.get("headcount") or data.get("employees"),
+        "social_count": sum(bool(data.get(key)) for key in ("linkedin", "twitter", "facebook")),
+        "decision_makers": aggregations.get("decision_makers"),
+    }
+    signals = _professional_company_signals(company_profile, "hunter")
+    if people:
+        signals.append(
+            Signal(
+                "validated_professional_contacts",
+                "confidence",
+                f"{len(people)} contato(s) profissional(is) encontrado(s)",
+                min(6, 2 + len(people)),
+                90,
+                source_url=f"https://hunter.io/search/{domain}",
+            )
+        )
+    return SourceResult(
+        "hunter",
+        people=_deduplicate_people(people),
+        signals=signals,
+        status="success" if people or signals else "no_data",
+        metadata={
+            "domain": domain,
+            "people_found": len(people),
+            "aggregations": aggregations,
+            "company": _public_company_metadata(company_profile),
+        },
+    )
+
+
 def collect_configured_provider(
     _: object, company: dict, settings: IntelligenceSettings, source_code: str
 ) -> SourceResult:
@@ -508,6 +718,9 @@ COLLECTORS = {
     "google_places": collect_google_places,
     "pagespeed": collect_pagespeed,
     "cvm": collect_cvm,
+    "apollo": collect_apollo,
+    "prospeo": collect_prospeo,
+    "hunter": collect_hunter,
 }
 
 
@@ -520,6 +733,267 @@ def collect_source(
     if source_code in {"pncp", "inpi", "meta_ads", "google_ads", "people_provider"}:
         return collect_configured_provider(conn, company, settings, source_code)
     raise ValueError(f"Fonte de inteligência desconhecida: {source_code}")
+
+
+def _company_domain(company: dict) -> str | None:
+    url = company.get("site_final_url") or company.get("site_url") or ""
+    domain = (urlparse(url).hostname or "").lower()
+    if not domain and company.get("email_tipo") == "corporativo":
+        domain = (company.get("email_dominio") or "").strip().lower()
+    domain = domain.removeprefix("www.").strip(".")
+    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}", domain):
+        return None
+    return domain
+
+
+def _join_name(item: dict) -> str:
+    return " ".join(
+        part.strip() for part in (item.get("first_name") or "", item.get("last_name") or "")
+        if part.strip()
+    )
+
+
+def _relationship(role: str | None, seniority: str | None = None) -> tuple[str, bool]:
+    value = f"{role or ''} {seniority or ''}".strip()
+    decision = bool(DECISION_WORDS.search(value)) or (seniority or "").lower() in {
+        "owner", "founder", "c_suite", "partner", "vp", "head", "director", "executive"
+    }
+    if re.search(r"fundador|fundadora|founder|owner", value, re.I):
+        return "founder", True
+    return ("executive", True) if decision else ("employee", False)
+
+
+def _apollo_person(item: dict) -> Person | None:
+    name = item.get("name") or _join_name(item)
+    if not name:
+        return None
+    role = item.get("title")
+    relationship, decision = _relationship(role, item.get("seniority"))
+    phones = item.get("phone_numbers") or []
+    phone = next(
+        (p.get("sanitized_number") or p.get("raw_number") for p in phones if isinstance(p, dict)),
+        None,
+    )
+    return Person(
+        full_name=name,
+        role_title=role,
+        relationship_type=relationship,
+        linkedin_url=item.get("linkedin_url"),
+        business_email=item.get("email"),
+        business_phone=phone,
+        is_decision_maker=decision,
+        confidence={"high": 95, "medium": 80, "low": 60}.get(item.get("match_confidence"), 80),
+        source_url=item.get("linkedin_url"),
+        raw_data={
+            "provider_id": item.get("id"),
+            "email_status": item.get("email_status"),
+            "seniority": item.get("seniority"),
+            "departments": item.get("departments") or [],
+        },
+    )
+
+
+def _prospeo_person(item: dict) -> Person | None:
+    name = item.get("full_name") or _join_name(item)
+    if not name:
+        return None
+    current_job = item.get("current_job") or item.get("job") or {}
+    role = item.get("job_title") or current_job.get("title")
+    seniority = item.get("seniority") or current_job.get("seniority")
+    relationship, decision = _relationship(role, seniority)
+    email = item.get("email")
+    if isinstance(email, dict):
+        email_value = email.get("email") or email.get("value")
+        email_status = email.get("status")
+    else:
+        email_value, email_status = email, None
+    mobile = item.get("mobile")
+    if isinstance(mobile, dict):
+        mobile_value = mobile.get("mobile") or mobile.get("value")
+    else:
+        mobile_value = mobile
+    return Person(
+        full_name=name,
+        role_title=role,
+        relationship_type=relationship,
+        linkedin_url=item.get("linkedin_url"),
+        business_email=email_value,
+        business_phone=mobile_value,
+        is_decision_maker=decision,
+        confidence=90 if email_status == "VERIFIED" else 80,
+        source_url=item.get("linkedin_url"),
+        raw_data={
+            "provider_id": item.get("person_id"),
+            "email_status": email_status,
+            "seniority": seniority,
+            "skills": item.get("skills") or [],
+        },
+    )
+
+
+def _hunter_person(item: dict) -> Person | None:
+    name = " ".join(
+        part for part in (item.get("first_name"), item.get("last_name")) if part
+    ).strip() or item.get("full_name")
+    if not name:
+        return None
+    role = item.get("position")
+    relationship, decision = _relationship(role, item.get("seniority"))
+    decision = bool(item.get("decision_maker", decision))
+    return Person(
+        full_name=name,
+        role_title=role,
+        relationship_type=relationship if decision else "employee",
+        linkedin_url=item.get("linkedin"),
+        business_email=item.get("value") or item.get("email"),
+        business_phone=item.get("phone_number"),
+        is_decision_maker=decision,
+        confidence=max(0, min(100, int(item.get("confidence") or 75))),
+        source_url=item.get("linkedin"),
+        raw_data={
+            "verification_status": item.get("verification_status"),
+            "department": item.get("department"),
+            "seniority": item.get("seniority"),
+            "type": item.get("type"),
+        },
+    )
+
+
+def _known_people(conn, cnpj: str, limit: int) -> list[dict]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT full_name,role_title,linkedin_url,is_decision_maker,confidence
+            FROM intelligence.company_people
+            WHERE cnpj=%s AND active=true AND source_code<>'prospeo'
+            ORDER BY is_decision_maker DESC,priority_score DESC,confidence DESC
+            LIMIT %s
+            """,
+            (cnpj, max(1, limit)),
+        )
+        columns = [item.name for item in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
+def _professional_company_signals(profile: dict, provider: str) -> list[Signal]:
+    if not profile:
+        return []
+    signals: list[Signal] = []
+    linkedin_url = profile.get("linkedin_url")
+    if linkedin_url:
+        signals.append(
+            Signal(
+                "linkedin_company_presence",
+                "presence",
+                "Página corporativa identificada no LinkedIn",
+                6,
+                90,
+                source_url=linkedin_url,
+                raw_data={"provider": provider, "linkedin_url": linkedin_url},
+            )
+        )
+    employees = _as_int(
+        profile.get("employee_count")
+        or profile.get("estimated_num_employees")
+        or profile.get("headcount")
+    )
+    if employees:
+        score = 12 if employees >= 500 else 9 if employees >= 100 else 6 if employees >= 20 else 3
+        signals.append(
+            Signal(
+                "professional_headcount",
+                "capacity",
+                f"Força profissional estimada em {employees} colaborador(es)",
+                score,
+                80,
+                source_url=linkedin_url,
+                raw_data={"provider": provider, "employee_count": employees},
+            )
+        )
+    jobs = profile.get("job_postings") or {}
+    active_jobs = _as_int(jobs.get("active_count") if isinstance(jobs, dict) else None)
+    if active_jobs:
+        signals.append(
+            Signal(
+                "active_hiring",
+                "intent",
+                f"Empresa com {active_jobs} vaga(s) pública(s) ativa(s)",
+                min(10, 5 + active_jobs),
+                85,
+                expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+                source_url=linkedin_url,
+                raw_data={"provider": provider, "active_jobs": active_jobs},
+            )
+        )
+    growth = profile.get("organization_headcount_six_month_growth") or profile.get("headcount_growth")
+    try:
+        growth_value = float(growth) if growth is not None else 0
+    except (TypeError, ValueError):
+        growth_value = 0
+    if growth_value > 0:
+        signals.append(
+            Signal(
+                "headcount_growth",
+                "intent",
+                f"Crescimento recente do quadro profissional ({growth_value:g}%)",
+                min(10, 4 + round(growth_value / 10)),
+                75,
+                expires_at=datetime.now(timezone.utc) + timedelta(days=90),
+                source_url=linkedin_url,
+                raw_data={"provider": provider, "growth_percent": growth_value},
+            )
+        )
+    funding = profile.get("funding") or {}
+    total_funding = _as_int(funding.get("total_funding") if isinstance(funding, dict) else None)
+    if total_funding:
+        signals.append(
+            Signal(
+                "company_funding",
+                "capacity",
+                "Captação de investimento identificada",
+                10,
+                85,
+                source_url=profile.get("crunchbase_url") or linkedin_url,
+                raw_data={"provider": provider, "total_funding_usd": total_funding},
+            )
+        )
+    social_count = _as_int(profile.get("social_count")) or sum(
+        bool(profile.get(key))
+        for key in ("linkedin_url", "twitter_url", "facebook_url", "instagram_url", "youtube_url")
+    )
+    if social_count >= 2:
+        signals.append(
+            Signal(
+                "professional_multichannel_presence",
+                "presence",
+                f"Presença corporativa em {social_count} redes profissionais/digitais",
+                min(8, 3 + social_count),
+                80,
+                source_url=linkedin_url,
+                raw_data={"provider": provider, "social_channels": social_count},
+            )
+        )
+    return signals
+
+
+def _public_company_metadata(profile: dict) -> dict:
+    if not profile:
+        return {}
+    allowed = {
+        "name", "domain", "website", "linkedin_url", "industry", "employee_count",
+        "estimated_num_employees", "employee_range", "founded", "revenue_range_printed",
+        "description", "job_postings", "funding", "technology", "twitter_url", "facebook_url",
+        "instagram_url", "youtube_url", "crunchbase_url", "organization_headcount_six_month_growth",
+        "decision_makers",
+    }
+    return {key: value for key, value in profile.items() if key in allowed and value is not None}
+
+
+def _as_int(value) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _jsonld_people(soup: BeautifulSoup, source_url: str) -> list[Person]:

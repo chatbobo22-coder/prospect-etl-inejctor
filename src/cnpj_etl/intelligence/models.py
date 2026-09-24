@@ -14,15 +14,32 @@ def _csv_env(name: str, default: str) -> tuple[str, ...]:
     )
 
 
+def _bool_env(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _configured_sources() -> tuple[str, ...]:
+    explicit = os.getenv("INTELLIGENCE_SOURCES")
+    if explicit is not None:
+        return _csv_env("INTELLIGENCE_SOURCES", "")
+    sources = ["receita", "email_quality", "website", "rdap", "cvm", "gdelt"]
+    for source, key_name in (
+        ("apollo", "APOLLO_API_KEY"),
+        ("prospeo", "PROSPEO_API_KEY"),
+        ("hunter", "HUNTER_API_KEY"),
+    ):
+        if os.getenv(key_name, "").strip():
+            sources.append(source)
+    return tuple(sources)
+
+
 @dataclass(frozen=True)
 class IntelligenceSettings:
     batch_size: int = int(os.getenv("INTELLIGENCE_BATCH_SIZE", "100"))
-    sources: tuple[str, ...] = field(
-        default_factory=lambda: _csv_env(
-            "INTELLIGENCE_SOURCES",
-            "receita,email_quality,website,rdap,cvm,gdelt",
-        )
-    )
+    sources: tuple[str, ...] = field(default_factory=_configured_sources)
     request_timeout: int = int(os.getenv("INTELLIGENCE_REQUEST_TIMEOUT", "15"))
     max_rounds: int = int(os.getenv("INTELLIGENCE_MAX_ROUNDS", "40"))
     delay_seconds: float = float(os.getenv("INTELLIGENCE_DELAY_SECONDS", "0.25"))
@@ -37,6 +54,17 @@ class IntelligenceSettings:
     )
     pagespeed_api_key: str = os.getenv("PAGESPEED_API_KEY", "").strip()
     provider_api_key: str = os.getenv("INTELLIGENCE_PROVIDER_API_KEY", "").strip()
+    apollo_api_key: str = os.getenv("APOLLO_API_KEY", "").strip()
+    prospeo_api_key: str = os.getenv("PROSPEO_API_KEY", "").strip()
+    hunter_api_key: str = os.getenv("HUNTER_API_KEY", "").strip()
+    provider_people_limit: int = int(os.getenv("PEOPLE_PROVIDER_LIMIT", "3"))
+    provider_batch_size: int = int(os.getenv("PEOPLE_PROVIDER_BATCH_SIZE", "10"))
+    reveal_provider_emails: bool = field(
+        default_factory=lambda: _bool_env("PEOPLE_PROVIDER_REVEAL_EMAILS", True)
+    )
+    reveal_provider_phones: bool = field(
+        default_factory=lambda: _bool_env("PEOPLE_PROVIDER_REVEAL_PHONES", False)
+    )
 
 
 @dataclass

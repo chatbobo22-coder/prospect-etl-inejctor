@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-CATEGORY_LIMITS = {"fit": 25, "capacity": 20, "intent": 25, "pain": 20}
+CATEGORY_LIMITS = {"fit": 25, "capacity": 20, "intent": 25, "pain": 20, "presence": 10}
 QUALITY_A_MIN_SCORE = 65
 QUALITY_B_MIN_SCORE = 35
 QUALITY_MIN_CONFIDENCE = 6
@@ -60,6 +60,7 @@ def calculate_profile(signals: list[dict], people: list[dict], states: list[dict
         "capacity_score": scores["capacity"],
         "intent_score": scores["intent"],
         "pain_score": scores["pain"],
+        "presence_score": scores["presence"],
         "data_confidence_score": confidence,
         "profile_score": total,
         "profile_quality": quality,

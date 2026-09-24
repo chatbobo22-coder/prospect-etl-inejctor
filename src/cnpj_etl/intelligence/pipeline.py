@@ -90,6 +90,8 @@ def _run_source(conn, source_code: str, settings: IntelligenceSettings, *, force
         batch_size = (
             min(settings.batch_size, settings.gdelt_batch_size)
             if source_code == "gdelt"
+            else min(settings.batch_size, settings.provider_batch_size)
+            if source_code in {"apollo", "prospeo", "hunter"}
             else settings.batch_size
         )
         companies = _pending_companies(
@@ -198,6 +200,7 @@ def _pending_companies(
                d.commerce_maturity, d.presence_maturity, d.has_chat, d.has_contact_form,
                d.has_checkout, d.has_product_page, d.whatsapp_valid,
                d.plataforma, d.plataformas_detectadas, d.chat_provider, d.email_tipo,
+               d.linkedin_url,
                d.google_place_id, d.google_places_checked_at, d.google_rating,
                d.google_rating_count, d.google_maps_url
         FROM cnpj.v_prospect_candidates v
@@ -386,15 +389,16 @@ def refresh_profile(conn, cnpj: str) -> dict:
     conn.execute(
         """
         INSERT INTO intelligence.company_profiles
-          (cnpj,fit_score,capacity_score,intent_score,pain_score,data_confidence_score,
+          (cnpj,fit_score,capacity_score,intent_score,pain_score,presence_score,data_confidence_score,
            profile_score,profile_quality,estimated_capacity_band,intent_last_seen_at,
            decision_makers_count,signals_count,sources_success,sources_pending,summary,reasons,
            calculated_at,updated_at,commercial_temperature,last_commercial_event_at,
            feedback_events_count)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),now(),%s,%s,%s)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),now(),%s,%s,%s)
         ON CONFLICT (cnpj) DO UPDATE SET
           fit_score=EXCLUDED.fit_score,capacity_score=EXCLUDED.capacity_score,
           intent_score=EXCLUDED.intent_score,pain_score=EXCLUDED.pain_score,
+          presence_score=EXCLUDED.presence_score,
           data_confidence_score=EXCLUDED.data_confidence_score,
           profile_score=EXCLUDED.profile_score,profile_quality=EXCLUDED.profile_quality,
           estimated_capacity_band=EXCLUDED.estimated_capacity_band,
@@ -413,6 +417,7 @@ def refresh_profile(conn, cnpj: str) -> dict:
             profile["capacity_score"],
             profile["intent_score"],
             profile["pain_score"],
+            profile["presence_score"],
             profile["data_confidence_score"],
             profile["profile_score"],
             profile["profile_quality"],

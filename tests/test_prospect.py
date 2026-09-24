@@ -1,10 +1,38 @@
 from cnpj_etl.prospect import (
     CORE_INTELLIGENCE_SOURCES,
+    calculate_reinforced_lead_score,
     classify_lead_quality,
     evaluate_qualification,
     reject_before_intelligence,
     select_contact_channel,
 )
+
+
+def test_public_professional_signals_reinforce_but_cap_lead_score():
+    score, bonus = calculate_reinforced_lead_score(
+        {
+            "lead_score": 72,
+            "intelligence_presence_score": 8,
+            "intelligence_capacity_score": 16,
+            "intelligence_intent_score": 12,
+            "intelligence_decision_makers_count": 2,
+        }
+    )
+
+    assert bonus == 19
+    assert score == 91
+
+    capped, capped_bonus = calculate_reinforced_lead_score(
+        {
+            "lead_score": 95,
+            "intelligence_presence_score": 10,
+            "intelligence_capacity_score": 20,
+            "intelligence_intent_score": 25,
+            "intelligence_decision_makers_count": 5,
+        }
+    )
+    assert capped_bonus == 20
+    assert capped == 100
 
 
 def test_only_identity_and_contact_sources_block_publication():

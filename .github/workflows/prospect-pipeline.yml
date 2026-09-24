@@ -120,6 +120,10 @@ jobs:
   pipeline:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    env:
+      APOLLO_API_KEY: ${{ secrets.APOLLO_API_KEY }}
+      PROSPEO_API_KEY: ${{ secrets.PROSPEO_API_KEY }}
+      HUNTER_API_KEY: ${{ secrets.HUNTER_API_KEY }}
 
     steps:
       - name: Checkout
@@ -179,10 +183,21 @@ jobs:
           echo "ENRICH_NO_SITE_RETRY_DAYS=30" >> "$GITHUB_ENV"
           echo "CRAWLER_MAX_PAGES=3" >> "$GITHUB_ENV"
           echo "GOOGLE_PLACES_ENABLED=false" >> "$GITHUB_ENV"
-          echo "INTELLIGENCE_SOURCES=${{ inputs.intelligence_sources || 'receita,email_quality,website,rdap,cvm,gdelt' }}" >> "$GITHUB_ENV"
+          sources="${{ inputs.intelligence_sources || 'receita,email_quality,website,rdap,cvm,gdelt' }}"
+          for provider in apollo prospeo hunter; do
+            key_name="${provider^^}_API_KEY"
+            if [ -n "${!key_name:-}" ] && [[ ",$sources," != *",$provider,"* ]]; then
+              sources="$sources,$provider"
+            fi
+          done
+          echo "INTELLIGENCE_SOURCES=$sources" >> "$GITHUB_ENV"
           # GDELT/CVM enriquecem o perfil, mas não seguram um lead digital A/B.
           echo "STRICT_INTELLIGENCE_GATE=false" >> "$GITHUB_ENV"
           echo "INTELLIGENCE_BATCH_SIZE=${{ inputs.intelligence_batch_size || '250' }}" >> "$GITHUB_ENV"
+          echo "PEOPLE_PROVIDER_BATCH_SIZE=10" >> "$GITHUB_ENV"
+          echo "PEOPLE_PROVIDER_LIMIT=3" >> "$GITHUB_ENV"
+          echo "PEOPLE_PROVIDER_REVEAL_EMAILS=true" >> "$GITHUB_ENV"
+          echo "PEOPLE_PROVIDER_REVEAL_PHONES=false" >> "$GITHUB_ENV"
           echo "INTELLIGENCE_DELAY_SECONDS=0.05" >> "$GITHUB_ENV"
           echo "INTELLIGENCE_MAX_ROUNDS=40" >> "$GITHUB_ENV"
           echo "GDELT_TIMEOUT_SECONDS=12" >> "$GITHUB_ENV"

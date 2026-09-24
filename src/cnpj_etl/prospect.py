@@ -116,6 +116,25 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw.lower() in {"1", "true", "yes", "on"}
 
 
+def calculate_reinforced_lead_score(row: dict) -> tuple[int, int]:
+    """Combina o score digital com evidências públicas, sem esconder a origem do bônus."""
+    digital_score = int(row.get("lead_score") or row.get("digital_score") or 0)
+    presence = int(row.get("intelligence_presence_score") or 0)
+    capacity = int(row.get("intelligence_capacity_score") or 0)
+    intent = int(row.get("intelligence_intent_score") or 0)
+    decision_makers = int(row.get("intelligence_decision_makers_count") or 0)
+    bonus = min(
+        20,
+        round(
+            presence
+            + capacity * 0.25
+            + intent * 0.25
+            + min(4, decision_makers * 2)
+        ),
+    )
+    return min(100, digital_score + bonus), bonus
+
+
 def select_contact_channel(row: dict) -> tuple[str | None, str | None, int, str]:
     """Retorna (channel, value, confidence, role)."""
     email = (row.get("email") or row.get("email_original") or "").strip()
@@ -340,6 +359,7 @@ def promote_qualified(conn) -> dict[str, int]:
           gm.is_primary AS group_primary, gm.group_key
           ,ip.profile_score, ip.profile_quality, ip.data_confidence_score,
           ip.decision_makers_count AS intelligence_decision_makers_count,
+          ip.presence_score AS intelligence_presence_score,
           ip.capacity_score AS intelligence_capacity_score,
           ip.intent_score AS intelligence_intent_score,
           ip.estimated_capacity_band, ip.summary AS intelligence_summary,
@@ -414,6 +434,7 @@ def promote_qualified(conn) -> dict[str, int]:
         "profile_quality",
         "data_confidence_score",
         "intelligence_decision_makers_count",
+        "intelligence_presence_score",
         "intelligence_capacity_score",
         "intelligence_intent_score",
         "estimated_capacity_band",
@@ -425,6 +446,9 @@ def promote_qualified(conn) -> dict[str, int]:
 
     for raw in rows:
         item = dict(zip(columns, raw))
+        digital_lead_score = int(item.get("lead_score") or item.get("digital_score") or 0)
+        final_lead_score, intelligence_bonus = calculate_reinforced_lead_score(item)
+        item["lead_score"] = final_lead_score
         status, rejection, reasons = evaluate_qualification(item)
         channel, contact_value, contact_conf, contact_role = select_contact_channel(item)
         lead_quality = classify_lead_quality(item, channel)
@@ -471,11 +495,15 @@ def promote_qualified(conn) -> dict[str, int]:
             continue
 
         intelligence_payload = {
+            "digital_lead_score": digital_lead_score,
+            "final_lead_score": final_lead_score,
+            "score_bonus": intelligence_bonus,
             "profile_score": item.get("profile_score"),
             "profile_quality": item.get("profile_quality"),
             "data_confidence_score": item.get("data_confidence_score"),
             "capacity_score": item.get("intelligence_capacity_score"),
             "intent_score": item.get("intelligence_intent_score"),
+            "presence_score": item.get("intelligence_presence_score"),
             "summary": item.get("intelligence_summary"),
             "reasons": item.get("intelligence_reasons") or [],
         }
