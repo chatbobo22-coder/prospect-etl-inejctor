@@ -169,23 +169,32 @@ def test_curl_download_requests_complete_byte_range(monkeypatch, tmp_path):
     remote = source.list_files("2026-09")[0]
     observed = {}
 
-    class FakeResult:
+    class FakeProcess:
         returncode = 0
 
-    def fake_run(command, **_kwargs):
-        observed["command"] = command
-        destination = command[command.index("--output") + 1]
-        with open(destination, "wb") as output:
-            output.write(b"zip-content")
-        return FakeResult()
+        def __init__(self, command):
+            observed["command"] = command
+            destination = command[command.index("--output") + 1]
+            with open(destination, "wb") as output:
+                output.write(b"zip-content")
 
-    monkeypatch.setattr("cnpj_etl.source.subprocess.run", fake_run)
+        def poll(self):
+            return self.returncode
 
-    source._download_with_curl(remote, str(tmp_path / "download.zip"), 1024)
+    monkeypatch.setattr("cnpj_etl.source.subprocess.Popen", FakeProcess)
+
+    progress = []
+    source._download_with_curl(
+        remote,
+        str(tmp_path / "download.zip"),
+        1024,
+        progress.append,
+    )
 
     range_index = observed["command"].index("--range")
     assert observed["command"][range_index + 1] == "0-999999999999"
     assert "--progress-bar" in observed["command"]
+    assert progress == [len(b"zip-content")]
 
 
 def test_curl_download_does_not_force_range_on_mirror(monkeypatch, tmp_path):
@@ -202,17 +211,19 @@ def test_curl_download_does_not_force_range_on_mirror(monkeypatch, tmp_path):
     )
     observed = {}
 
-    class FakeResult:
+    class FakeProcess:
         returncode = 0
 
-    def fake_run(command, **_kwargs):
-        observed["command"] = command
-        destination = command[command.index("--output") + 1]
-        with open(destination, "wb") as output:
-            output.write(b"zip-content")
-        return FakeResult()
+        def __init__(self, command):
+            observed["command"] = command
+            destination = command[command.index("--output") + 1]
+            with open(destination, "wb") as output:
+                output.write(b"zip-content")
 
-    monkeypatch.setattr("cnpj_etl.source.subprocess.run", fake_run)
+        def poll(self):
+            return self.returncode
+
+    monkeypatch.setattr("cnpj_etl.source.subprocess.Popen", FakeProcess)
 
     source._download_with_curl(remote, str(tmp_path / "download.zip"), 1024)
 

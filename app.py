@@ -240,6 +240,11 @@ def _runtime_log_lines(
         ]
         if item.get("bytes"):
             details.append(f"tamanho={_format_runtime_bytes(item['bytes'])}")
+        if item.get("downloaded_bytes"):
+            details.append(f"baixados={_format_runtime_bytes(item['downloaded_bytes'])}")
+        if item.get("scanned_rows"):
+            details.append(f"lidas={int(item['scanned_rows']):,}")
+            details.append(f"ignoradas={int(item.get('skipped_rows') or 0):,}")
         if item.get("error"):
             details.append(f"erro={item['error']}")
         lines.append(
@@ -268,6 +273,12 @@ def _runtime_log_lines(
         f"qualificadas A/B={int(counts.get('qualified') or 0):,} | "
         f"descartadas={int(counts.get('rejected') or 0):,}"
     )
+    lines.append(
+        "[TRIAGEM] "
+        f"pré-filtro barato={int(counts.get('rejected_pre_enrichment') or 0):,} | "
+        f"após presença digital={int(counts.get('rejected_below_score') or 0):,} | "
+        f"outros motivos={max(0, int(counts.get('rejected') or 0) - int(counts.get('rejected_pre_enrichment') or 0) - int(counts.get('rejected_below_score') or 0)):,}"
+    )
 
     intelligence = telemetry.get("intelligence") or {}
     if intelligence:
@@ -281,6 +292,18 @@ def _runtime_log_lines(
             details.append(f"fonte={source}")
         lines.append(f"[INTELIGÊNCIA] {' | '.join(details)}")
 
+    enrichment = telemetry.get("enrichment") or {}
+    if enrichment:
+        lines.append(
+            "[ENRIQUECIMENTO] "
+            f"status={enrichment.get('status') or 'aguardando'} | "
+            f"processados={int(enrichment.get('processed') or 0):,} | "
+            f"concluídos={int(enrichment.get('done') or 0):,} | "
+            f"parciais={int(enrichment.get('partial') or 0):,} | "
+            f"sem site={int(enrichment.get('no_site') or 0):,} | "
+            f"falhas={int(enrichment.get('failed') or 0):,}"
+        )
+
     storage = telemetry.get("storage") or {}
     schema_parts = [
         f"{name}={_format_runtime_bytes(size)}"
@@ -293,6 +316,19 @@ def _runtime_log_lines(
 
     if telemetry.get("warning"):
         lines.append(f"[AVISO] {telemetry['warning']}")
+
+    activity = telemetry.get("activity") or {}
+    if activity:
+        progress = ""
+        if activity.get("total"):
+            progress = (
+                f" | avanço={int(activity.get('current') or 0):,}/"
+                f"{int(activity['total']):,}"
+            )
+        lines.append(
+            f"[ATIVIDADE] {activity.get('label') or activity.get('phase') or 'Processando'}"
+            f"{progress} | último sinal={activity.get('updated_at') or 'agora'}"
+        )
 
     current_step = next(
         (step["name"] for step in steps if step["status"] == "in_progress"),
@@ -374,19 +410,35 @@ def _database_telemetry(workflow_run_id: int) -> dict[str, Any]:
         ).fetchall()
         counts = conn.execute(
             """
+            WITH decision_counts AS (
+              SELECT
+                count(*) FILTER (WHERE decision='rejected') AS rejected,
+                count(*) FILTER (
+                  WHERE decision='rejected'
+                    AND EXISTS (
+                      SELECT 1 FROM unnest(reason_codes) AS reasons(reason)
+                      WHERE reason LIKE 'lead_score_abaixo_%'
+                    )
+                ) AS rejected_below_score,
+                count(*) FILTER (
+                  WHERE decision='rejected'
+                    AND EXISTS (
+                      SELECT 1 FROM unnest(reason_codes) AS reasons(reason)
+                      WHERE reason LIKE 'pre_score_abaixo_%'
+                    )
+                ) AS rejected_pre_enrichment
+              FROM etl.candidate_decisions
+            )
             SELECT
               (SELECT count(*) FROM cnpj.estabelecimentos),
               (SELECT count(*) FROM cnpj.digital_presenca),
               (SELECT count(*) FROM cnpj.prospectos_qualificados
                 WHERE qualification_status='qualified'
                   AND lead_quality IN ('A','B')),
-              (SELECT count(*) FROM etl.candidate_decisions WHERE decision='rejected'),
-              (SELECT count(*) FROM etl.candidate_decisions
-                WHERE decision='rejected'
-                  AND EXISTS (
-                    SELECT 1 FROM unnest(reason_codes) AS reasons(reason)
-                    WHERE reason LIKE 'lead_score_abaixo_%'
-                  ))
+              rejected,
+              rejected_below_score,
+              rejected_pre_enrichment
+            FROM decision_counts
             """
         ).fetchone()
         source_rows = conn.execute(
@@ -404,8 +456,18 @@ def _database_telemetry(workflow_run_id: int) -> dict[str, Any]:
         profiles = conn.execute("SELECT count(*) FROM intelligence.company_profiles").fetchone()[0]
         latest_source_run = conn.execute(
             """
-            SELECT source_code,status,processed,success,no_data,failed
-            FROM intelligence.source_runs
+            SELECT source_code,status,processed,success,no_data,failed,
+                   started_at,finished_at,
+                   COALESCE((to_jsonb(sr)->>'activity_at')::timestamptz,started_at)
+            FROM intelligence.source_runs sr
+            ORDER BY id DESC LIMIT 1
+            """
+        ).fetchone()
+        latest_enrichment_run = conn.execute(
+            """
+            SELECT id,status,started_at,finished_at,processed,done,partial,no_site,failed,
+                   COALESCE((to_jsonb(er)->>'activity_at')::timestamptz,started_at)
+            FROM etl.enrichment_runs er
             ORDER BY id DESC LIMIT 1
             """
         ).fetchone()
@@ -414,9 +476,21 @@ def _database_telemetry(workflow_run_id: int) -> dict[str, Any]:
             file_rows = conn.execute(
                 """
                 SELECT file_name,file_type,status,rows_processed,source_size,
-                       downloaded_at,processed_at,error_message
-                FROM etl.files WHERE competence=%s
-                ORDER BY COALESCE(processed_at,downloaded_at) DESC NULLS LAST,file_name
+                       downloaded_at,processed_at,error_message,
+                       COALESCE((to_jsonb(f)->>'downloaded_bytes')::bigint,0),
+                       COALESCE((to_jsonb(f)->>'scanned_rows')::bigint,0),
+                       COALESCE((to_jsonb(f)->>'skipped_rows')::bigint,0),
+                       COALESCE(
+                         (to_jsonb(f)->>'activity_at')::timestamptz,
+                         processed_at,downloaded_at
+                       )
+                FROM etl.files f WHERE competence=%s
+                ORDER BY (status IN ('downloading','processing')) DESC,
+                         COALESCE(
+                           (to_jsonb(f)->>'activity_at')::timestamptz,
+                           processed_at,downloaded_at
+                         ) DESC NULLS LAST,
+                         file_name
                 LIMIT 20
                 """,
                 (etl_run[1],),
@@ -431,6 +505,10 @@ def _database_telemetry(workflow_run_id: int) -> dict[str, Any]:
                     "downloaded_at": row[5].isoformat() if row[5] else None,
                     "processed_at": row[6].isoformat() if row[6] else None,
                     "error": row[7],
+                    "downloaded_bytes": row[8],
+                    "scanned_rows": row[9],
+                    "skipped_rows": row[10],
+                    "activity_at": row[11].isoformat() if row[11] else None,
                 }
                 for row in file_rows
             ]
@@ -465,6 +543,81 @@ def _database_telemetry(workflow_run_id: int) -> dict[str, Any]:
         item["completed"] + item["failed"] + item["running"] for item in core_source_data
     )
     latest_source = latest_source_run[0] if latest_source_run else None
+    enrichment_data = None
+    if latest_enrichment_run:
+        enrichment_data = {
+            "id": latest_enrichment_run[0],
+            "status": latest_enrichment_run[1],
+            "started_at": latest_enrichment_run[2].isoformat(),
+            "finished_at": (
+                latest_enrichment_run[3].isoformat() if latest_enrichment_run[3] else None
+            ),
+            "processed": latest_enrichment_run[4],
+            "done": latest_enrichment_run[5],
+            "partial": latest_enrichment_run[6],
+            "no_site": latest_enrichment_run[7],
+            "failed": latest_enrichment_run[8],
+            "activity_at": latest_enrichment_run[9].isoformat(),
+        }
+
+    activity_candidates = []
+    active_file = next(
+        (item for item in files if item["status"] in {"downloading", "processing"}),
+        None,
+    )
+    if active_file:
+        if active_file["status"] == "downloading":
+            label = f"Baixando {active_file['name']}"
+            current = active_file["downloaded_bytes"]
+            total = active_file["bytes"]
+        else:
+            label = (
+                f"Lendo {active_file['name']}: "
+                f"{int(active_file['scanned_rows'] or 0):,} linhas examinadas, "
+                f"{int(active_file['rows'] or 0):,} elegíveis"
+            )
+            current = active_file["scanned_rows"]
+            total = None
+        activity_candidates.append(
+            {
+                "phase": active_file["status"],
+                "label": label,
+                "current": current,
+                "total": total,
+                "updated_at": active_file["activity_at"],
+            }
+        )
+    if enrichment_data and enrichment_data["status"] == "running":
+        activity_candidates.append(
+            {
+                "phase": "enrichment",
+                "label": (
+                    "Enriquecendo presença digital: "
+                    f"{int(enrichment_data['processed'] or 0):,} empresas avaliadas"
+                ),
+                "current": enrichment_data["processed"],
+                "total": None,
+                "updated_at": enrichment_data["activity_at"],
+            }
+        )
+    if latest_source_run and latest_source_run[1] == "running":
+        activity_candidates.append(
+            {
+                "phase": "intelligence",
+                "label": (
+                    f"Consultando {latest_source}: "
+                    f"{int(latest_source_run[2] or 0):,} empresas verificadas"
+                ),
+                "current": latest_source_run[2],
+                "total": None,
+                "updated_at": latest_source_run[8].isoformat(),
+            }
+        )
+    activity = max(
+        activity_candidates,
+        key=lambda item: item.get("updated_at") or "",
+        default=None,
+    )
     return {
         "etl_run": run_data,
         "files": files,
@@ -479,7 +632,10 @@ def _database_telemetry(workflow_run_id: int) -> dict[str, Any]:
             "qualified": counts[2],
             "rejected": counts[3],
             "rejected_below_score": counts[4],
+            "rejected_pre_enrichment": counts[5],
         },
+        "enrichment": enrichment_data,
+        "activity": activity,
         "intelligence": {
             "profiles": profiles,
             "completed_checks": sum(item["completed"] for item in source_data),
@@ -497,6 +653,11 @@ def _database_telemetry(workflow_run_id: int) -> dict[str, Any]:
                 "success": latest_source_run[3],
                 "no_data": latest_source_run[4],
                 "failed": latest_source_run[5],
+                "started_at": latest_source_run[6].isoformat(),
+                "finished_at": (
+                    latest_source_run[7].isoformat() if latest_source_run[7] else None
+                ),
+                "activity_at": latest_source_run[8].isoformat(),
             }
             if latest_source_run
             else None,
@@ -674,6 +835,7 @@ def workflow_run_detail(run_id: int):
                 "qualified": 0,
                 "rejected": 0,
                 "rejected_below_score": 0,
+                "rejected_pre_enrichment": 0,
             },
             "warning": "Telemetria do banco temporariamente indisponível",
         }

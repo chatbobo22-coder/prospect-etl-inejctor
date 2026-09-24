@@ -4,6 +4,8 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date
@@ -17,7 +19,7 @@ from tenacity import before_sleep_log, retry, stop_after_attempt, wait_exponenti
 
 log = logging.getLogger(__name__)
 
-DOWNLOAD_LOG_EVERY_BYTES = 100 * 1024 * 1024  # 100 MB
+DOWNLOAD_LOG_EVERY_BYTES = 16 * 1024 * 1024  # heartbeat visível sem poluir o banco
 REFERENCE_FILE_NAMES = (
     "Cnaes.zip",
     "Motivos.zip",
@@ -424,7 +426,11 @@ class RfbSource:
         reraise=True,
     )
     def _download_with_curl(
-        self, remote: RemoteFile, destination: str, chunk_bytes: int
+        self,
+        remote: RemoteFile,
+        destination: str,
+        chunk_bytes: int,
+        progress_callback: Callable[[int], None] | None = None,
     ) -> tuple[str, int]:
         command = self._curl_command(remote.url)
         # Receita accepts finite ranged downloads from some GitHub-hosted runners
@@ -437,13 +443,17 @@ class RfbSource:
             download_options.extend(("--range", "0-999999999999"))
         download_options.extend(("--output", destination))
         command[-1:-1] = download_options
-        completed = subprocess.run(
-            command,
-            check=False,
-        )
-        if completed.returncode:
+        process = subprocess.Popen(command)
+        last_reported = 0
+        while process.poll() is None:
+            size = os.path.getsize(destination) if os.path.exists(destination) else 0
+            if progress_callback and size - last_reported >= DOWNLOAD_LOG_EVERY_BYTES:
+                progress_callback(size)
+                last_reported = size
+            time.sleep(1)
+        if process.returncode:
             raise requests.ConnectionError(
-                f"curl encerrou com código {completed.returncode} ao baixar {remote.name}"
+                f"curl encerrou com código {process.returncode} ao baixar {remote.name}"
             )
 
         digest, size, last_logged = hashlib.sha256(), 0, 0
@@ -454,14 +464,22 @@ class RfbSource:
                 if size - last_logged >= DOWNLOAD_LOG_EVERY_BYTES:
                     log.info("Validação %s: %s lidos", remote.name, fmt_bytes(size))
                     last_logged = size
+        if progress_callback:
+            progress_callback(size)
         return digest.hexdigest(), size
 
     def _download_to_path(
-        self, remote: RemoteFile, destination: str, chunk_bytes: int
+        self,
+        remote: RemoteFile,
+        destination: str,
+        chunk_bytes: int,
+        progress_callback: Callable[[int], None] | None = None,
     ) -> tuple[str, int]:
         if self.curl_path and self.mode == "nextcloud":
             log.info("Download iniciado via curl: %s", remote.name)
-            sha256, size = self._download_with_curl(remote, destination, chunk_bytes)
+            sha256, size = self._download_with_curl(
+                remote, destination, chunk_bytes, progress_callback
+            )
             log.info("Download concluído: %s (%s)", remote.name, fmt_bytes(size))
             return sha256, size
         digest, size = hashlib.sha256(), 0
@@ -482,21 +500,40 @@ class RfbSource:
                     if size - last_logged >= DOWNLOAD_LOG_EVERY_BYTES:
                         log.info("Download %s: %s recebidos", remote.name, fmt_bytes(size))
                         last_logged = size
+                        if progress_callback:
+                            progress_callback(size)
         log.info("Download concluído: %s (%s)", remote.name, fmt_bytes(size))
+        if progress_callback:
+            progress_callback(size)
         return digest.hexdigest(), size
 
-    def download(self, remote: RemoteFile, destination, chunk_bytes: int) -> tuple[str, int]:
+    def download(
+        self,
+        remote: RemoteFile,
+        destination,
+        chunk_bytes: int,
+        progress_callback: Callable[[int], None] | None = None,
+    ) -> tuple[str, int]:
         temporary = destination.with_suffix(destination.suffix + ".part")
-        sha256, size = self._download_to_path(remote, temporary, chunk_bytes)
+        sha256, size = self._download_to_path(
+            remote, temporary, chunk_bytes, progress_callback
+        )
         temporary.replace(destination)
         return sha256, size
 
     @contextmanager
-    def temporary_download(self, remote: RemoteFile, chunk_bytes: int):
+    def temporary_download(
+        self,
+        remote: RemoteFile,
+        chunk_bytes: int,
+        progress_callback: Callable[[int], None] | None = None,
+    ):
         fd, path = tempfile.mkstemp(prefix="cnpj-etl-", suffix=".zip")
         os.close(fd)
         try:
-            sha256, size = self._download_to_path(remote, path, chunk_bytes)
+            sha256, size = self._download_to_path(
+                remote, path, chunk_bytes, progress_callback
+            )
             yield path, sha256, size
         finally:
             if os.path.exists(path):

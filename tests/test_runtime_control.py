@@ -54,12 +54,34 @@ def test_runtime_logs_finish_with_current_state_and_detailed_telemetry():
                 "bytes": 2048,
             }
         ],
-        "counts": {"companies": 100, "enriched": 40, "qualified": 12},
+        "counts": {
+            "companies": 100,
+            "enriched": 40,
+            "qualified": 12,
+            "rejected": 18,
+            "rejected_pre_enrichment": 10,
+            "rejected_below_score": 5,
+        },
         "intelligence": {
             "completed_checks": 180,
             "profiles": 40,
             "failed_checks": 2,
             "current_source": "website",
+        },
+        "enrichment": {
+            "status": "running",
+            "processed": 17,
+            "done": 12,
+            "partial": 3,
+            "no_site": 1,
+            "failed": 1,
+        },
+        "activity": {
+            "phase": "processing",
+            "label": "Lendo Estabelecimentos0.zip",
+            "current": 50000,
+            "total": 100000,
+            "updated_at": "2026-09-23T15:00:02Z",
         },
         "storage": {"database_bytes": 4096, "schemas": {"cnpj": 2048}},
     }
@@ -70,9 +92,15 @@ def test_runtime_logs_finish_with_current_state_and_detailed_telemetry():
     assert any("[ETL]" in line and "arquivos=2/10" in line for line in lines)
     assert any("qualificadas A/B=12" in line for line in lines)
     assert any(
+        "[TRIAGEM]" in line and "pré-filtro barato=10" in line and "outros motivos=3" in line
+        for line in lines
+    )
+    assert any(
         "[INTELIGÊNCIA]" in line and "consultas concluídas=180" in line and "fonte=website" in line
         for line in lines
     )
+    assert any("[ENRIQUECIMENTO]" in line and "processados=17" in line for line in lines)
+    assert any("[ATIVIDADE]" in line and "avanço=50,000/100,000" in line for line in lines)
     assert lines[-1].startswith("[AGORA] Run ETL")
 
 

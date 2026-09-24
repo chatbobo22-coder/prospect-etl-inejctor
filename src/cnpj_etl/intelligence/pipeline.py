@@ -74,7 +74,8 @@ def run_intelligence_until_empty(
 
 def _run_source(conn, source_code: str, settings: IntelligenceSettings, *, force: bool) -> dict:
     run_id = conn.execute(
-        "INSERT INTO intelligence.source_runs (source_code) VALUES (%s) RETURNING id",
+        "INSERT INTO intelligence.source_runs (source_code,activity_at) "
+        "VALUES (%s,now()) RETURNING id",
         (source_code,),
     ).fetchone()[0]
     conn.commit()
@@ -110,9 +111,23 @@ def _run_source(conn, source_code: str, settings: IntelligenceSettings, *, force
                 result = collect_source(source_code, conn, company, settings)
                 _persist_result(conn, cnpj, result)
                 refresh_profile(conn, cnpj)
-                conn.commit()
                 stats["processed"] += 1
                 stats[result.status] = stats.get(result.status, 0) + 1
+                conn.execute(
+                    """
+                    UPDATE intelligence.source_runs
+                    SET processed=%s,success=%s,no_data=%s,failed=%s,activity_at=now()
+                    WHERE id=%s
+                    """,
+                    (
+                        stats["processed"],
+                        stats["success"],
+                        stats["no_data"] + stats["skipped"],
+                        stats["failed"],
+                        run_id,
+                    ),
+                )
+                conn.commit()
                 transient = result.status == "skipped" and result.metadata.get("reason") in {
                     "rate_limited",
                     "temporarily_unavailable",
@@ -121,9 +136,21 @@ def _run_source(conn, source_code: str, settings: IntelligenceSettings, *, force
             except Exception as exc:
                 conn.rollback()
                 _mark_failed(conn, cnpj, source_code, exc)
-                conn.commit()
                 stats["processed"] += 1
                 stats["failed"] += 1
+                conn.execute(
+                    "UPDATE intelligence.source_runs "
+                    "SET processed=%s,success=%s,no_data=%s,failed=%s,activity_at=now() "
+                    "WHERE id=%s",
+                    (
+                        stats["processed"],
+                        stats["success"],
+                        stats["no_data"] + stats["skipped"],
+                        stats["failed"],
+                        run_id,
+                    ),
+                )
+                conn.commit()
                 consecutive_errors += 1
                 log.warning("Fonte %s falhou para %s: %s", source_code, cnpj, exc)
             delay_seconds = (
@@ -146,7 +173,7 @@ def _run_source(conn, source_code: str, settings: IntelligenceSettings, *, force
         conn.execute(
             """
             UPDATE intelligence.source_runs SET finished_at=now(), status='success',
-              processed=%s, success=%s, no_data=%s, failed=%s
+              processed=%s, success=%s, no_data=%s, failed=%s, activity_at=now()
             WHERE id=%s
             """,
             (
@@ -162,7 +189,8 @@ def _run_source(conn, source_code: str, settings: IntelligenceSettings, *, force
     except Exception as exc:
         conn.rollback()
         conn.execute(
-            "UPDATE intelligence.source_runs SET finished_at=now(),status='failed',error_message=%s WHERE id=%s",
+            "UPDATE intelligence.source_runs SET finished_at=now(),status='failed',"
+            "error_message=%s,activity_at=now() WHERE id=%s",
             (str(exc)[:2000], run_id),
         )
         conn.commit()

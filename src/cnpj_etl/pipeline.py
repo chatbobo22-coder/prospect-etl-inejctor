@@ -210,7 +210,9 @@ def run(
                         "ON CONFLICT (competence,file_name) DO UPDATE SET "
                         "source_size=EXCLUDED.source_size,"
                         "source_last_modified=EXCLUDED.source_last_modified,"
-                        "status='success',rows_processed=0,processed_at=now(),error_message=NULL",
+                        "status='success',rows_processed=0,processed_at=now(),"
+                        "downloaded_bytes=0,scanned_rows=0,skipped_rows=0,activity_at=now(),"
+                        "error_message=NULL",
                         (
                             competence,
                             remote.name,
@@ -245,12 +247,14 @@ def run(
                     continue
                 lock_conn.execute(
                     "INSERT INTO etl.files "
-                    "(competence,file_name,file_type,source_url,source_size,source_last_modified,status) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,'downloading') "
+                    "(competence,file_name,file_type,source_url,source_size,"
+                    "source_last_modified,status,activity_at) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,'downloading',now()) "
                     "ON CONFLICT (competence,file_name) DO UPDATE SET "
                     "source_size=EXCLUDED.source_size, "
                     "source_last_modified=EXCLUDED.source_last_modified, "
-                    "status='downloading',error_message=NULL",
+                    "status='downloading',downloaded_bytes=0,scanned_rows=0,"
+                    "skipped_rows=0,activity_at=now(),error_message=NULL",
                     (
                         competence,
                         remote.name,
@@ -271,10 +275,25 @@ def run(
                     )
                     lock_conn.execute(
                         "UPDATE etl.files SET sha256=%s,source_size=%s,downloaded_at=now(),"
-                        "status='processing' WHERE competence=%s AND file_name=%s",
-                        (sha256, size, competence, remote.name),
+                        "downloaded_bytes=%s,status='processing',activity_at=now() "
+                        "WHERE competence=%s AND file_name=%s",
+                        (sha256, size, size, competence, remote.name),
                     )
                     lock_conn.commit()
+
+                    def report_load_progress(scanned: int, matched: int, skipped: int) -> None:
+                        lock_conn.execute(
+                            "UPDATE etl.files SET rows_processed=%s,scanned_rows=%s,"
+                            "skipped_rows=%s,activity_at=now() "
+                            "WHERE competence=%s AND file_name=%s",
+                            (matched, scanned, skipped, competence, remote.name),
+                        )
+                        lock_conn.execute(
+                            "UPDATE etl.runs SET rows_processed=%s WHERE id=%s",
+                            (total + matched, run_id),
+                        )
+                        lock_conn.commit()
+
                     return load_zip(
                         lock_conn,
                         path,
@@ -284,15 +303,34 @@ def run(
                         label=remote.name,
                         filter_ctx=filter_ctx,
                         log_progress_every=settings.log_progress_every,
+                        progress_callback=report_load_progress,
                     )
 
                 log.info("Baixando %s …", remote.name)
+
+                def report_download_progress(downloaded_bytes: int) -> None:
+                    lock_conn.execute(
+                        "UPDATE etl.files SET downloaded_bytes=%s,activity_at=now() "
+                        "WHERE competence=%s AND file_name=%s",
+                        (downloaded_bytes, competence, remote.name),
+                    )
+                    lock_conn.commit()
+
                 if settings.keep_downloads:
                     path = settings.data_dir / competence / remote.name
-                    sha256, size = source.download(remote, path, settings.download_chunk_bytes)
+                    sha256, size = source.download(
+                        remote,
+                        path,
+                        settings.download_chunk_bytes,
+                        report_download_progress,
+                    )
                     rows = ingest(path, sha256, size)
                 else:
-                    with source.temporary_download(remote, settings.download_chunk_bytes) as (
+                    with source.temporary_download(
+                        remote,
+                        settings.download_chunk_bytes,
+                        report_download_progress,
+                    ) as (
                         path,
                         sha256,
                         size,
@@ -300,7 +338,8 @@ def run(
                         rows = ingest(path, sha256, size)
 
                 lock_conn.execute(
-                    "UPDATE etl.files SET status='success',rows_processed=%s,processed_at=now() "
+                    "UPDATE etl.files SET status='success',rows_processed=%s,processed_at=now(),"
+                    "activity_at=now() "
                     "WHERE competence=%s AND file_name=%s",
                     (rows, competence, remote.name),
                 )

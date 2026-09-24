@@ -3,6 +3,7 @@ from datetime import datetime
 import hashlib
 import io
 import logging
+from collections.abc import Callable
 from zipfile import ZipFile
 
 from psycopg import sql
@@ -171,6 +172,7 @@ def load_zip(
     label: str | None = None,
     filter_ctx=None,
     log_progress_every: int = 50000,
+    progress_callback: Callable[[int, int, int], None] | None = None,
 ) -> int:
     table, columns = DATASETS[kind]
     conflict = (
@@ -220,6 +222,8 @@ def load_zip(
                         skipped,
                         pct,
                     )
+                    if progress_callback:
+                        progress_callback(scanned, matched, skipped)
             if chunk:
                 flush_chunk(conn, table, chunk, conflict, kind=kind, label=display_name)
                 count += len(chunk)
@@ -231,4 +235,6 @@ def load_zip(
         skipped,
         len(filter_ctx.matched_basics) if filter_ctx else "-",
     )
+    if progress_callback:
+        progress_callback(scanned, count, skipped)
     return count

@@ -106,3 +106,11 @@ def test_professional_network_migration_registers_sources_and_presence_score():
         assert f"('{source}'" in text
     assert "ADD COLUMN IF NOT EXISTS presence_score" in text
     assert "CREATE OR REPLACE VIEW intelligence.v_commercial_profiles" in text
+
+
+def test_injector_runtime_control_tracks_live_progress():
+    sql_dir = Path(__file__).resolve().parents[1] / "sql"
+    text = (sql_dir / "015_injector_runtime_control.sql").read_text(encoding="utf-8")
+
+    for field in ("downloaded_bytes", "scanned_rows", "skipped_rows", "activity_at"):
+        assert field in text

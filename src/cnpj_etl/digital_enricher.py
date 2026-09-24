@@ -618,8 +618,8 @@ def run_enrichment(
 
     run_id = conn.execute(
         """
-        INSERT INTO etl.enrichment_runs (enrichment_version, status)
-        VALUES (%s, 'running') RETURNING id
+        INSERT INTO etl.enrichment_runs (enrichment_version, status, activity_at)
+        VALUES (%s, 'running', now()) RETURNING id
         """,
         (settings.enrichment_version,),
     ).fetchone()[0]
@@ -651,10 +651,26 @@ def run_enrichment(
             try:
                 result = enrich_record(row, conn, settings)
                 upsert_result(conn, result)
-                conn.commit()
                 stats["processed"] += 1
                 status_key = result.enrich_status if result.enrich_status in stats else "partial"
                 stats[status_key] = stats.get(status_key, 0) + 1
+                conn.execute(
+                    """
+                    UPDATE etl.enrichment_runs
+                    SET processed=%s,done=%s,partial=%s,no_site=%s,failed=%s,
+                        activity_at=now()
+                    WHERE id=%s
+                    """,
+                    (
+                        stats["processed"],
+                        stats.get("done", 0),
+                        stats.get("partial", 0),
+                        stats.get("no_site", 0),
+                        stats.get("failed", 0),
+                        run_id,
+                    ),
+                )
+                conn.commit()
                 if stats["processed"] == 1 or stats["processed"] % 10 == 0:
                     log.info(
                         "Enriquecimento em andamento: processados=%s/%s cnpj=%s status=%s",
@@ -666,6 +682,11 @@ def run_enrichment(
             except Exception as exc:
                 conn.rollback()
                 stats["failed"] += 1
+                conn.execute(
+                    "UPDATE etl.enrichment_runs SET failed=%s,activity_at=now() WHERE id=%s",
+                    (stats["failed"], run_id),
+                )
+                conn.commit()
                 log.exception("Falha ao enriquecer %s: %s", cnpj, exc)
             import time
 
@@ -675,7 +696,8 @@ def run_enrichment(
             """
             UPDATE etl.enrichment_runs
             SET finished_at = now(), status = 'done',
-                processed = %s, done = %s, partial = %s, no_site = %s, failed = %s
+                processed = %s, done = %s, partial = %s, no_site = %s, failed = %s,
+                activity_at=now()
             WHERE id = %s
             """,
             (
