@@ -43,7 +43,12 @@ class IntelligenceSettings:
     request_timeout: int = int(os.getenv("INTELLIGENCE_REQUEST_TIMEOUT", "15"))
     max_rounds: int = int(os.getenv("INTELLIGENCE_MAX_ROUNDS", "40"))
     delay_seconds: float = float(os.getenv("INTELLIGENCE_DELAY_SECONDS", "0.25"))
-    min_lead_score: int = int(os.getenv("INTELLIGENCE_MIN_LEAD_SCORE", "70"))
+    min_lead_score: int = int(
+        os.getenv(
+            "INTELLIGENCE_ENTRY_MIN_SCORE",
+            os.getenv("INTELLIGENCE_MIN_LEAD_SCORE", "35"),
+        )
+    )
     website_max_pages: int = int(os.getenv("INTELLIGENCE_WEBSITE_MAX_PAGES", "3"))
     gdelt_max_records: int = int(os.getenv("GDELT_MAX_RECORDS", "10"))
     gdelt_timeout_seconds: int = int(os.getenv("GDELT_TIMEOUT_SECONDS", "12"))

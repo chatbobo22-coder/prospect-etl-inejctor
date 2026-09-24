@@ -27,6 +27,9 @@ def prune_evaluated_candidates(conn) -> dict[str, int]:
 
     # Inteligência detalhada só é patrimônio comercial para leads aprovados.
     for name, table in (
+        ("intent_alerts", "intelligence.intent_alert_events"),
+        ("tironi_history", "intelligence.tironi_score_history"),
+        ("tironi_profiles", "intelligence.tironi_profiles"),
         ("source_state", "intelligence.company_source_state"),
         ("people", "intelligence.company_people"),
         ("signals", "intelligence.company_signals"),

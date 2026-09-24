@@ -1,11 +1,88 @@
 from cnpj_etl.prospect import (
     CORE_INTELLIGENCE_SOURCES,
+    calculate_preliminary_score,
     calculate_reinforced_lead_score,
     classify_lead_quality,
     evaluate_qualification,
+    reject_before_enrichment,
     reject_before_intelligence,
     select_contact_channel,
 )
+
+
+def test_preliminary_score_keeps_complete_leads_with_free_email():
+    assert (
+        calculate_preliminary_score(
+            {
+                "email": "proprietario@gmail.com",
+                "telefone_1": "11999998888",
+                "nome_fantasia": "Loja Forte",
+                "porte": "03",
+                "capital_social": 100_000,
+                "cnae_fiscal_principal": "4751201",
+            }
+        )
+        == 85
+    )
+
+
+def test_preliminary_score_rejects_incomplete_lead_before_http():
+    assert (
+        calculate_preliminary_score(
+            {
+                "email": "empresa@gmail.com",
+                "telefone_1": "",
+                "nome_fantasia": "",
+                "porte": "01",
+                "capital_social": 1_000,
+                "cnae_fiscal_principal": "4751201",
+            }
+        )
+        == 40
+    )
+
+
+def test_tironi_score_is_the_final_score_after_intelligence():
+    score, bonus = calculate_reinforced_lead_score(
+        {
+            "lead_score": 45,
+            "tironi_score": 82,
+            "intelligence_presence_score": 10,
+            "intelligence_capacity_score": 20,
+            "intelligence_intent_score": 25,
+            "intelligence_decision_makers_count": 2,
+        }
+    )
+
+    assert bonus == 20
+    assert score == 82
+
+
+def test_cheap_prefilter_archives_rejected_contact_before_http():
+    class Result:
+        rowcount = 3
+
+    class Connection:
+        def __init__(self):
+            self.calls = []
+            self.committed = False
+
+        def execute(self, query, params=None):
+            self.calls.append((query, params))
+            return Result()
+
+        def commit(self):
+            self.committed = True
+
+    conn = Connection()
+    stats = reject_before_enrichment(conn, min_pre_score=50)
+
+    assert stats == {"rejected": 3, "threshold": 50}
+    assert conn.calls[0][1] == (50, 180, 50)
+    assert "pre_score_abaixo_" in conn.calls[0][0]
+    assert "v.razao_social" in conn.calls[0][0]
+    assert "v.telefone_1" in conn.calls[0][0]
+    assert conn.committed is True
 
 
 def test_public_professional_signals_reinforce_but_cap_lead_score():

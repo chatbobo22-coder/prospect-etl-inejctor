@@ -110,6 +110,11 @@ def test_migrate_file_retries_a_deadlock(tmp_path, monkeypatch):
 def test_fast_lead_cycle_publishes_after_company_file(monkeypatch):
     calls = []
 
+    monkeypatch.setattr(
+        cli,
+        "reject_before_enrichment",
+        lambda *_a, **_k: calls.append("prefilter") or {},
+    )
     monkeypatch.setattr(cli, "run_enrichment", lambda *_a, **_k: calls.append("enrich") or {})
     monkeypatch.setattr(
         cli,
@@ -141,6 +146,8 @@ def test_fast_lead_cycle_publishes_after_company_file(monkeypatch):
     cli.run_fast_lead_cycle(object(), remote, 100)
 
     assert calls == [
+        "prefilter",
+        "prune",
         "enrich",
         "triage",
         "prune",

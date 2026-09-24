@@ -164,7 +164,7 @@ jobs:
           echo "FILTER_HEADQUARTERS_ONLY=true" >> "$GITHUB_ENV"
           echo "FILTER_MAX_CANDIDATES_PER_RUN=${{ inputs.load_batch_size || '12000' }}" >> "$GITHUB_ENV"
           echo "FAST_LEAD_MODE=true" >> "$GITHUB_ENV"
-          echo "FAST_LEAD_BATCH_SIZE=100" >> "$GITHUB_ENV"
+          echo "FAST_LEAD_BATCH_SIZE=250" >> "$GITHUB_ENV"
           echo "FILTER_MIN_ACTIVITY_MONTHS=${{ inputs.min_activity_months || '12' }}" >> "$GITHUB_ENV"
           echo "FILTER_MIN_POPULATION=${{ inputs.min_population || '0' }}" >> "$GITHUB_ENV"
           echo "CHUNK_SIZE=5000" >> "$GITHUB_ENV"
@@ -175,15 +175,17 @@ jobs:
           echo "ENRICH_MAX_ROUNDS=40" >> "$GITHUB_ENV"
           echo "ENRICH_BRASILAPI=false" >> "$GITHUB_ENV"
           echo "ENRICH_DELAY_SECONDS=0.05" >> "$GITHUB_ENV"
-          echo "ENRICH_REQUEST_TIMEOUT=8" >> "$GITHUB_ENV"
+          echo "ENRICH_REQUEST_TIMEOUT=5" >> "$GITHUB_ENV"
+          echo "PROSPECT_MIN_PRE_SCORE=50" >> "$GITHUB_ENV"
           echo "PROSPECT_MIN_CONFIDENCE_SCORE=${{ inputs.min_confidence_score || '70' }}" >> "$GITHUB_ENV"
           echo "PROSPECT_MIN_LEAD_SCORE=${{ inputs.min_lead_score || '70' }}" >> "$GITHUB_ENV"
-          echo "INTELLIGENCE_MIN_LEAD_SCORE=${{ inputs.min_lead_score || '70' }}" >> "$GITHUB_ENV"
+          echo "INTELLIGENCE_ENTRY_MIN_SCORE=35" >> "$GITHUB_ENV"
+          echo "INTELLIGENCE_MIN_LEAD_SCORE=35" >> "$GITHUB_ENV"
           echo "REJECTED_REVIEW_DAYS=180" >> "$GITHUB_ENV"
           echo "PROSPECT_EXCLUDE_MEI=${{ inputs.exclude_mei != false }}" >> "$GITHUB_ENV"
           echo "ENRICHMENT_VERSION=v2" >> "$GITHUB_ENV"
           echo "ENRICH_NO_SITE_RETRY_DAYS=30" >> "$GITHUB_ENV"
-          echo "CRAWLER_MAX_PAGES=3" >> "$GITHUB_ENV"
+          echo "CRAWLER_MAX_PAGES=2" >> "$GITHUB_ENV"
           echo "GOOGLE_PLACES_ENABLED=false" >> "$GITHUB_ENV"
           sources="${{ inputs.intelligence_sources || 'receita,email_quality,website,rdap,cvm,gdelt' }}"
           for provider in apollo prospeo hunter; do
@@ -298,9 +300,9 @@ jobs:
           print(f"google_places_requests_24h={gplaces}")
           PY
 
-      - name: Check whether another batch exists
+      - name: Check whether another sequential batch exists
         id: next_batch
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.continuous == true }}
+        if: ${{ github.event_name == 'schedule' || inputs.continuous == true }}
         env:
           LOAD_BATCH_SIZE: ${{ inputs.load_batch_size || '12000' }}
         run: |
@@ -324,7 +326,7 @@ jobs:
           print(f"lote_estabelecimentos={loaded} limite={batch_size} continuar={should_continue}")
           PY
 
-      - name: Queue next continuous batch
+      - name: Queue next sequential batch after this one is complete
         if: ${{ steps.next_batch.outputs.continue == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -333,21 +335,21 @@ jobs:
             --ref "${{ github.ref_name }}" \
             -f competence="${{ inputs.competence }}" \
             -f filter_cnaes="${{ inputs.filter_cnaes }}" \
-            -f active_only="${{ inputs.active_only }}" \
-            -f include_secondary_cnae="${{ inputs.include_secondary_cnae }}" \
-            -f require_nome_fantasia="${{ inputs.require_nome_fantasia }}" \
-            -f require_telefone="${{ inputs.require_telefone }}" \
-            -f require_email="${{ inputs.require_email }}" \
-            -f block_backoffice_email="${{ inputs.block_backoffice_email }}" \
-            -f min_activity_months="${{ inputs.min_activity_months }}" \
-            -f min_population="${{ inputs.min_population }}" \
-            -f exclude_mei="${{ inputs.exclude_mei }}" \
-            -f min_confidence_score="${{ inputs.min_confidence_score }}" \
-            -f min_lead_score="${{ inputs.min_lead_score }}" \
-            -f load_batch_size="${{ inputs.load_batch_size }}" \
+            -f active_only="${{ inputs.active_only != false }}" \
+            -f include_secondary_cnae="${{ github.event_name == 'schedule' || inputs.include_secondary_cnae == true }}" \
+            -f require_nome_fantasia="${{ inputs.require_nome_fantasia == true }}" \
+            -f require_telefone="${{ inputs.require_telefone == true }}" \
+            -f require_email="${{ inputs.require_email != false }}" \
+            -f block_backoffice_email="${{ inputs.block_backoffice_email != false }}" \
+            -f min_activity_months="${{ inputs.min_activity_months || '12' }}" \
+            -f min_population="${{ inputs.min_population || '0' }}" \
+            -f exclude_mei="${{ inputs.exclude_mei != false }}" \
+            -f min_confidence_score="${{ inputs.min_confidence_score || '70' }}" \
+            -f min_lead_score="${{ inputs.min_lead_score || '70' }}" \
+            -f load_batch_size="${{ inputs.load_batch_size || '12000' }}" \
             -f force_etl=true \
             -f continuous=true \
             -f force_enrich=false \
-            -f enrich_batch_size="${{ inputs.enrich_batch_size }}" \
-            -f intelligence_sources="${{ inputs.intelligence_sources }}" \
-            -f intelligence_batch_size="${{ inputs.intelligence_batch_size }}"
+            -f enrich_batch_size="${{ inputs.enrich_batch_size || '500' }}" \
+            -f intelligence_sources="${{ inputs.intelligence_sources || 'receita,email_quality,website,rdap,cvm,gdelt' }}" \
+            -f intelligence_batch_size="${{ inputs.intelligence_batch_size || '250' }}"

@@ -19,6 +19,99 @@ CORE_INTELLIGENCE_SOURCES = (
 )
 
 
+def calculate_preliminary_score(row: dict) -> int:
+    """Score local barato que decide se vale pagar enriquecimento HTTP."""
+    email = (row.get("email") or row.get("correio_eletronico") or "").strip().lower()
+    domain = email.rsplit("@", 1)[-1] if "@" in email else ""
+    free_domains = {
+        "gmail.com",
+        "hotmail.com",
+        "outlook.com",
+        "yahoo.com",
+        "yahoo.com.br",
+        "icloud.com",
+        "live.com",
+        "bol.com.br",
+        "uol.com.br",
+        "terra.com.br",
+    }
+    score = 20 if is_valid_email(email) else 0
+    score += 20 if domain and domain not in free_domains else 10 if domain else 0
+    if (row.get("telefone_1") or row.get("telefone")):
+        score += 15
+    if (row.get("nome_fantasia") or "").strip():
+        score += 10
+    score += {"05": 20, "03": 15, "01": 5}.get((row.get("porte") or "").strip(), 0)
+    try:
+        capital = float(row.get("capital_social") or 0)
+    except (TypeError, ValueError):
+        capital = 0
+    if capital >= 1_000_000:
+        score += 15
+    elif capital >= 100_000:
+        score += 10
+    elif capital >= 10_000:
+        score += 5
+    if row.get("cnae_fiscal_principal"):
+        score += 5
+    return min(100, score)
+
+
+def reject_before_enrichment(conn, *, min_pre_score: int | None = None) -> dict[str, int]:
+    """Arquiva candidatos fracos usando apenas dados locais, antes de qualquer HTTP."""
+    threshold = (
+        _env_int("PROSPECT_MIN_PRE_SCORE", 50)
+        if min_pre_score is None
+        else min_pre_score
+    )
+    review_days = _env_int("REJECTED_REVIEW_DAYS", 180)
+    # Deve permanecer equivalente a ``calculate_preliminary_score``.
+    score_sql = """
+      LEAST(100,
+        20
+        + CASE WHEN lower(split_part(v.email,'@',2)) IN (
+            'gmail.com','hotmail.com','outlook.com','yahoo.com','yahoo.com.br',
+            'icloud.com','live.com','bol.com.br','uol.com.br','terra.com.br'
+          ) THEN 10 ELSE 20 END
+        + CASE WHEN NULLIF(btrim(v.telefone_1),'') IS NOT NULL THEN 15 ELSE 0 END
+        + CASE WHEN NULLIF(btrim(v.nome_fantasia),'') IS NOT NULL THEN 10 ELSE 0 END
+        + CASE btrim(COALESCE(v.porte,'')) WHEN '05' THEN 20 WHEN '03' THEN 15
+            WHEN '01' THEN 5 ELSE 0 END
+        + CASE WHEN COALESCE(v.capital_social,0) >= 1000000 THEN 15
+            WHEN COALESCE(v.capital_social,0) >= 100000 THEN 10
+            WHEN COALESCE(v.capital_social,0) >= 10000 THEN 5 ELSE 0 END
+        + CASE WHEN NULLIF(btrim(v.cnae_fiscal_principal),'') IS NOT NULL THEN 5 ELSE 0 END
+      )
+    """
+    result = conn.execute(
+        f"""
+        INSERT INTO etl.candidate_decisions
+          (cnpj,cnpj_basico,decision,profile_score,data_confidence_score,lead_score,
+           razao_social,nome_fantasia,telefone,email,reason_codes,source_competence,
+           evaluated_at,next_review_at,updated_at)
+        SELECT v.cnpj,v.cnpj_basico,'rejected',0,0,({score_sql})::smallint,
+          v.razao_social,v.nome_fantasia,
+          NULLIF(regexp_replace(COALESCE(v.telefone_1,''),'[^0-9]','','g'),''),
+          NULLIF(lower(btrim(v.email)),''),
+          ARRAY['pre_score_abaixo_' || %s::text]::text[],v.source_competence,
+          now(),now()+(%s * interval '1 day'),now()
+        FROM cnpj.v_prospect_candidates v
+        LEFT JOIN cnpj.digital_presenca d ON d.cnpj=v.cnpj
+        WHERE d.cnpj IS NULL
+          AND ({score_sql}) < %s
+          AND NOT EXISTS (
+            SELECT 1 FROM etl.candidate_decisions decision WHERE decision.cnpj=v.cnpj
+          )
+        ON CONFLICT (cnpj) DO NOTHING
+        """,
+        (threshold, review_days, threshold),
+    )
+    conn.commit()
+    stats = {"rejected": max(0, result.rowcount), "threshold": threshold}
+    log.info("Pré-filtro barato antes do enriquecimento HTTP: %s", stats)
+    return stats
+
+
 def reject_before_intelligence(conn, *, min_lead_score: int | None = None) -> dict[str, int]:
     """Descarta cedo o que não deve consumir consultas de inteligência.
 
@@ -135,7 +228,13 @@ def calculate_reinforced_lead_score(row: dict) -> tuple[int, int]:
             + min(4, decision_makers * 2)
         ),
     )
-    return min(100, digital_score + bonus), bonus
+    legacy_score = min(100, digital_score + bonus)
+    tironi_score = row.get("tironi_score")
+    return (
+        (int(tironi_score), bonus)
+        if tironi_score is not None
+        else (legacy_score, bonus)
+    )
 
 
 def select_contact_channel(row: dict) -> tuple[str | None, str | None, int, str]:
@@ -367,9 +466,13 @@ def promote_qualified(conn) -> dict[str, int]:
           ip.intent_score AS intelligence_intent_score,
           ip.estimated_capacity_band, ip.summary AS intelligence_summary,
           ip.reasons AS intelligence_reasons
+          ,tp.tironi_score,tp.classification AS tironi_classification,
+          tp.why_this_lead,tp.recommended_products,tp.recommended_plan,
+          tp.next_best_action
         FROM cnpj.v_prospect_candidates v
         JOIN cnpj.digital_presenca d ON d.cnpj = v.cnpj
         JOIN intelligence.company_profiles ip ON ip.cnpj=v.cnpj
+        LEFT JOIN intelligence.tironi_profiles tp ON tp.cnpj=v.cnpj
         LEFT JOIN intelligence.email_verifications ev ON ev.cnpj=v.cnpj
         LEFT JOIN intelligence.company_group_members gm ON gm.cnpj=v.cnpj
         WHERE d.enrich_status IN ('done', 'partial', 'no_site', 'failed')
@@ -443,6 +546,12 @@ def promote_qualified(conn) -> dict[str, int]:
         "estimated_capacity_band",
         "intelligence_summary",
         "intelligence_reasons",
+        "tironi_score",
+        "tironi_classification",
+        "why_this_lead",
+        "recommended_products",
+        "recommended_plan",
+        "next_best_action",
     ]
 
     stats = {"qualified": 0, "rejected": 0, "review_required": 0, "blocked": 0, "updated": 0}
@@ -452,6 +561,10 @@ def promote_qualified(conn) -> dict[str, int]:
         digital_lead_score = int(item.get("lead_score") or item.get("digital_score") or 0)
         final_lead_score, intelligence_bonus = calculate_reinforced_lead_score(item)
         item["lead_score"] = final_lead_score
+        item["confidence_score"] = max(
+            int(item.get("confidence_score") or 0),
+            int(item.get("data_confidence_score") or 0) * 10,
+        )
         status, rejection, reasons = evaluate_qualification(item)
         channel, contact_value, contact_conf, contact_role = select_contact_channel(item)
         lead_quality = classify_lead_quality(item, channel)
@@ -509,6 +622,12 @@ def promote_qualified(conn) -> dict[str, int]:
             "presence_score": item.get("intelligence_presence_score"),
             "summary": item.get("intelligence_summary"),
             "reasons": item.get("intelligence_reasons") or [],
+            "tironi_score": item.get("tironi_score"),
+            "tironi_classification": item.get("tironi_classification"),
+            "why_this_lead": item.get("why_this_lead"),
+            "recommended_products": item.get("recommended_products") or [],
+            "recommended_plan": item.get("recommended_plan"),
+            "next_best_action": item.get("next_best_action"),
         }
         signals_payload = dict(item["sinais"] or {})
         signals_payload["intelligence_profile"] = intelligence_payload

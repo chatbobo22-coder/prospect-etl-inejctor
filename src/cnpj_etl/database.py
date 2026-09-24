@@ -78,6 +78,31 @@ class Database:
         ).fetchone()[0]
         if has_digital:
             conn.execute("TRUNCATE cnpj.digital_presenca")
+        # Um reset real não pode manter decisões antigas, pois elas excluem os
+        # mesmos CNPJs das cargas seguintes por até 180 dias.
+        generated_tables = (
+            "intelligence.intent_alert_events",
+            "intelligence.tironi_score_history",
+            "intelligence.tironi_profiles",
+            "intelligence.company_group_members",
+            "intelligence.company_groups",
+            "intelligence.company_technologies",
+            "intelligence.email_verifications",
+            "intelligence.company_signals",
+            "intelligence.company_people",
+            "intelligence.company_profiles",
+            "intelligence.company_source_state",
+            "intelligence.source_runs",
+            "etl.candidate_decisions",
+            "etl.enrichment_runs",
+        )
+        existing = [
+            table
+            for table in generated_tables
+            if conn.execute("SELECT to_regclass(%s) IS NOT NULL", (table,)).fetchone()[0]
+        ]
+        if existing:
+            conn.execute(f"TRUNCATE {', '.join(existing)} RESTART IDENTITY CASCADE")
         conn.execute("DELETE FROM etl.files")
         conn.execute("DELETE FROM etl.runs")
 

@@ -18,7 +18,12 @@ from .intelligence import IntelligenceSettings, run_intelligence, run_intelligen
 from .intent.service import rebuild_profiles
 from .outreach_sync import sync_qualified_leads
 from .pipeline import run
-from .prospect import CORE_INTELLIGENCE_SOURCES, promote_qualified, reject_before_intelligence
+from .prospect import (
+    CORE_INTELLIGENCE_SOURCES,
+    promote_qualified,
+    reject_before_enrichment,
+    reject_before_intelligence,
+)
 from .retention import prune_evaluated_candidates
 from .source import RfbSource
 
@@ -36,14 +41,16 @@ def run_fast_lead_cycle(conn, remote, rows: int) -> None:
         return
 
     batch_size = int(os.getenv("FAST_LEAD_BATCH_SIZE", "100"))
-    lead_threshold = int(os.getenv("PROSPECT_MIN_LEAD_SCORE", "70"))
+    entry_threshold = int(os.getenv("INTELLIGENCE_ENTRY_MIN_SCORE", "35"))
     logging.info(
         "[FAST-LEAD] %s carregado; validando até %s melhores candidatos agora",
         remote.name,
         batch_size,
     )
+    prefilter_stats = reject_before_enrichment(conn)
+    prefilter_retention = prune_evaluated_candidates(conn)
     enrich_stats = run_enrichment(conn, EnrichSettings(batch_size=batch_size))
-    triage_stats = reject_before_intelligence(conn, min_lead_score=lead_threshold)
+    triage_stats = reject_before_intelligence(conn, min_lead_score=entry_threshold)
     retention_before = prune_evaluated_candidates(conn)
 
     intelligence_stats = run_intelligence(
@@ -52,7 +59,7 @@ def run_fast_lead_cycle(conn, remote, rows: int) -> None:
             IntelligenceSettings(),
             sources=CORE_INTELLIGENCE_SOURCES,
             batch_size=batch_size,
-            min_lead_score=lead_threshold,
+            min_lead_score=entry_threshold,
             max_rounds=1,
         ),
     )
@@ -60,8 +67,11 @@ def run_fast_lead_cycle(conn, remote, rows: int) -> None:
     synced = sync_qualified_leads(conn)
     retention_after = prune_evaluated_candidates(conn)
     logging.info(
-        "[FAST-LEAD] lote publicado: enrich=%s triagem=%s intelligence=%s "
-        "qualify=%s outreach=%s retention_before=%s retention_after=%s",
+        "[FAST-LEAD] lote publicado: prefilter=%s prefilter_retention=%s "
+        "enrich=%s triagem=%s intelligence=%s qualify=%s outreach=%s "
+        "retention_before=%s retention_after=%s",
+        prefilter_stats,
+        prefilter_retention,
         enrich_stats,
         triage_stats,
         intelligence_stats,
@@ -247,11 +257,18 @@ def main():
         batch_size = args.batch_size or int(os.getenv("ENRICH_BATCH_SIZE", "500"))
         settings_obj = EnrichSettings(batch_size=batch_size)
         with db.connect() as conn:
-            initial_triage = reject_before_intelligence(conn)
+            entry_threshold = int(os.getenv("INTELLIGENCE_ENTRY_MIN_SCORE", "35"))
+            prefilter_stats = reject_before_enrichment(conn)
+            prefilter_retention = prune_evaluated_candidates(conn)
+            initial_triage = reject_before_intelligence(
+                conn, min_lead_score=entry_threshold
+            )
             initial_retention = prune_evaluated_candidates(conn)
 
             def triage_round(round_number: int, round_stats: dict) -> None:
-                rejected = reject_before_intelligence(conn)
+                rejected = reject_before_intelligence(
+                    conn, min_lead_score=entry_threshold
+                )
                 retained = prune_evaluated_candidates(conn)
                 logging.info(
                     "Funil contínuo rodada=%s enrich=%s rejeitados=%s retenção=%s",
@@ -267,7 +284,9 @@ def main():
                 force=args.force_enrich,
                 after_round=triage_round,
             )
-            final_triage = reject_before_intelligence(conn)
+            final_triage = reject_before_intelligence(
+                conn, min_lead_score=entry_threshold
+            )
             pre_intelligence_retention = prune_evaluated_candidates(conn)
 
             def publish_round(round_number: int, round_stats: dict) -> None:
@@ -320,9 +339,12 @@ def main():
             synced = sync_qualified_leads(conn)
             retention_stats = prune_evaluated_candidates(conn)
         logging.info(
-            "Pipeline prospect: triagem_inicial=%s retenção_inicial=%s enrich=%s "
+            "Pipeline prospect: prefilter=%s prefilter_retention=%s "
+            "triagem_inicial=%s retenção_inicial=%s enrich=%s "
             "triagem_final=%s retenção_pre_inteligência=%s intelligence=%s "
             "qualify=%s outreach=%s retention=%s",
+            prefilter_stats,
+            prefilter_retention,
             initial_triage,
             initial_retention,
             enrich_stats,
