@@ -15,6 +15,7 @@ from .digital_enricher import (
 )
 from .ibge_population import ensure_municipios_populacao
 from .intelligence import IntelligenceSettings, run_intelligence, run_intelligence_until_empty
+from .intent.service import rebuild_profiles
 from .outreach_sync import sync_qualified_leads
 from .pipeline import run
 from .prospect import CORE_INTELLIGENCE_SOURCES, promote_qualified, reject_before_intelligence
@@ -144,6 +145,10 @@ def main():
     intelligence.add_argument(
         "--until-empty", action="store_true", help="Processa até esvaziar a fila"
     )
+    intent = sub.add_parser(
+        "rebuild-intent", help="Recalcula Tironi Score, recomendações e histórico"
+    )
+    intent.add_argument("--limit", type=int, default=1000, help="Máximo de leads qualificados")
     rescore = sub.add_parser("rescore-digital", help="Recalcula scores v2 sem HTTP")
     rescore.add_argument("--version", default="v2", help="Versão alvo do score")
     requeue = sub.add_parser("requeue-enrichment", help="Recoloca registros antigos na fila")
@@ -345,6 +350,11 @@ def main():
             else:
                 stats = run_intelligence(conn, settings_obj, force=args.force)
         logging.info("Inteligência comercial concluída: %s", stats)
+    elif args.command == "rebuild-intent":
+        db.migrate(sql_dir)
+        with db.connect() as conn:
+            total = rebuild_profiles(conn, max(1, args.limit))
+        logging.info("Perfis de intenção recalculados: %s", total)
     elif args.command == "rescore-digital":
         db.migrate(sql_dir)
         with db.connect() as conn:

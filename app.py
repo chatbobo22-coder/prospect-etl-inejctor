@@ -18,6 +18,7 @@ from cnpj_etl.config import Settings
 from cnpj_etl.database import Database
 from cnpj_etl.intelligence import get_company_profile, list_sources
 from cnpj_etl.intelligence.pipeline import record_feedback
+from cnpj_etl.intent.service import get_opportunity, list_opportunities, rebuild_profiles
 
 log = logging.getLogger(__name__)
 app = FastAPI(title="CNPJ ETL", version="2.0.0")
@@ -521,6 +522,9 @@ def root():
             "/api/intelligence/sources",
             "/api/intelligence/companies/{cnpj}",
             "/api/intelligence/feedback",
+            "/api/opportunities",
+            "/api/opportunities/{cnpj}",
+            "/api/opportunities/rebuild",
         ],
     }
 
@@ -858,6 +862,67 @@ def intelligence_company(cnpj: str):
     if not profile:
         raise HTTPException(status_code=404, detail="Empresa não encontrada")
     return profile
+
+
+@app.get("/api/opportunities", dependencies=[Depends(_require_api_key)])
+def opportunities(
+    q: str | None = None,
+    state: str | None = None,
+    city: str | None = None,
+    segment_fit: str | None = None,
+    classification: str | None = None,
+    min_score: int | None = Query(default=None, ge=0, le=100),
+    min_employees: int | None = Query(default=None, ge=0),
+    min_units: int | None = Query(default=None, ge=1),
+    has_whatsapp: bool | None = None,
+    has_crm: bool | None = None,
+    has_erp: bool | None = None,
+    has_ecommerce: bool | None = None,
+    has_sales_team: bool | None = None,
+    technology: str | None = None,
+    signal_type: str | None = None,
+    signal_since_days: int | None = Query(default=None, ge=0, le=3650),
+    preset: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, ge=1, le=100),
+):
+    filters = {key: value for key, value in locals().items() if value is not None}
+    try:
+        db = Database(Settings().database_url)
+        with db.connect() as conn:
+            return list_opportunities(conn, filters)
+    except Exception:
+        log.exception("Opportunity search failed")
+        raise _service_error() from None
+
+
+@app.get("/api/opportunities/{cnpj}", dependencies=[Depends(_require_api_key)])
+def opportunity_detail(cnpj: str):
+    digits = re.sub(r"\D", "", cnpj)
+    if len(digits) != 14:
+        raise HTTPException(status_code=422, detail="CNPJ inválido")
+    try:
+        db = Database(Settings().database_url)
+        with db.connect() as conn:
+            result = get_opportunity(conn, digits)
+    except Exception:
+        log.exception("Opportunity detail failed")
+        raise _service_error() from None
+    if not result:
+        raise HTTPException(status_code=404, detail="Oportunidade não encontrada")
+    return result
+
+
+@app.post("/api/opportunities/rebuild", dependencies=[Depends(_require_write_api_key)])
+def opportunity_rebuild(limit: int = Query(default=1000, ge=1, le=10000)):
+    try:
+        db = Database(Settings().database_url)
+        with db.connect() as conn:
+            total = rebuild_profiles(conn, limit)
+    except Exception:
+        log.exception("Opportunity rebuild failed")
+        raise _service_error() from None
+    return {"processed": total}
 
 
 @app.post("/api/intelligence/feedback", dependencies=[Depends(_require_write_api_key)])

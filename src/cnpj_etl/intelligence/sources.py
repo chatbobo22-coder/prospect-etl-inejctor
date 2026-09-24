@@ -925,6 +925,42 @@ def _professional_company_signals(profile: dict, provider: str) -> list[Signal]:
                 raw_data={"provider": provider, "active_jobs": active_jobs},
             )
         )
+    # Somente classifica vagas quando o provedor devolve título/URL reais.
+    # O sinal geral de contratação não é convertido em vaga de IA/dev sem evidência.
+    job_items = []
+    if isinstance(jobs, dict):
+        job_items = jobs.get("items") or jobs.get("jobs") or jobs.get("data") or []
+    elif isinstance(jobs, list):
+        job_items = jobs
+    job_patterns = (
+        ("ai_hiring", r"\b(ai|ia|intelig.ncia artificial|machine learning|ml engineer|automation)\b",
+         "Contratação em IA/automação identificada", 20),
+        ("software_hiring", r"desenvolvedor|developer|software engineer|engenheir[oa] de software|tech lead|cto|integra",
+         "Contratação de tecnologia/software identificada", 15),
+        ("sales_hiring", r"\b(sdr|bdr|vendedor|vendedora|gerente comercial|head comercial|sales)\b",
+         "Contratação comercial identificada", 10),
+    )
+    for item in job_items if isinstance(job_items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or item.get("job_title") or "").strip()
+        url = item.get("url") or item.get("job_url") or linkedin_url
+        if not title:
+            continue
+        for signal_type, pattern, label, signal_score in job_patterns:
+            if re.search(pattern, title, re.I):
+                signals.append(
+                    Signal(
+                        signal_type,
+                        "intent",
+                        f"{label}: {title}",
+                        signal_score,
+                        90,
+                        expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+                        source_url=url,
+                        raw_data={"provider": provider, "job_id": item.get("id"), "job_title": title},
+                    )
+                )
     growth = profile.get("organization_headcount_six_month_growth") or profile.get("headcount_growth")
     try:
         growth_value = float(growth) if growth is not None else 0

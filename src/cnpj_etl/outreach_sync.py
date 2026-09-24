@@ -29,13 +29,21 @@ def sync_qualified_leads(conn, *, commit: bool = True) -> int:
                    IN ('financeiro', 'fiscal', 'nfe', 'contabilidade') THEN 'finance'
             ELSE 'general'
           END,
-          p.lead_score,
+          COALESCE(t.tironi_score, p.lead_score),
           p.confidence_score,
-          to_jsonb(p),
+          to_jsonb(p) || jsonb_build_object(
+            'tironi_score', t.tironi_score,
+            'tironi_classification', t.classification,
+            'why_this_lead', t.why_this_lead,
+            'recommended_products', t.recommended_products,
+            'recommended_plan', t.recommended_plan,
+            'next_best_action', t.next_best_action
+          ),
           'cnpj_etl',
           'ready',
           now()
         FROM cnpj.prospectos_qualificados p
+        LEFT JOIN intelligence.tironi_profiles t ON t.cnpj=p.cnpj
         WHERE p.qualification_status = 'qualified'
           AND p.lead_quality IN ('A', 'B')
           AND p.email IS NOT NULL

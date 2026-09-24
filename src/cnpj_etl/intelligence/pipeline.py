@@ -435,6 +435,11 @@ def refresh_profile(conn, cnpj: str) -> dict:
             feedback["count"],
         ),
     )
+    # A camada genérica permanece intacta; o perfil Tironi é uma projeção
+    # comercial adicional, recalculada incrementalmente a cada nova evidência.
+    from ..intent.service import refresh_tironi_profile
+
+    refresh_tironi_profile(conn, cnpj)
     return profile
 
 
