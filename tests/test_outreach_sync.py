@@ -34,6 +34,8 @@ def test_sync_only_publishes_qualified_ab_leads():
     assert "p.whatsapp_url" in conn.query
     assert "whatsapp = EXCLUDED.whatsapp" in conn.query
     assert "'marketing_ready', true" in conn.query
+    assert "jsonb_strip_nulls(jsonb_build_object" in conn.query
+    assert "to_jsonb(p)" not in conn.query
     assert "IS DISTINCT FROM" in conn.query
 
 

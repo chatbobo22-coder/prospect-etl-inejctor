@@ -95,6 +95,7 @@ class Database:
             "intelligence.source_runs",
             "etl.candidate_decisions",
             "etl.enrichment_runs",
+            "etl.funnel_metrics",
         )
         existing = [
             table

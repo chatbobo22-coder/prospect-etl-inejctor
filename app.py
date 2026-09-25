@@ -408,25 +408,36 @@ def _database_telemetry(workflow_run_id: int) -> dict[str, Any]:
             GROUP BY schemaname ORDER BY 2 DESC
             """
         ).fetchall()
+        archived_decisions = (0, 0, 0)
+        if conn.execute(
+            "SELECT to_regclass('etl.funnel_metrics') IS NOT NULL"
+        ).fetchone()[0]:
+            archived_decisions = conn.execute(
+                """
+                SELECT rejected,rejected_below_score,rejected_pre_enrichment
+                FROM etl.funnel_metrics WHERE singleton
+                """
+            ).fetchone() or archived_decisions
         counts = conn.execute(
             """
             WITH decision_counts AS (
               SELECT
                 count(*) FILTER (WHERE decision='rejected') AS rejected,
                 count(*) FILTER (
-                  WHERE decision='rejected'
-                    AND EXISTS (
-                      SELECT 1 FROM unnest(reason_codes) AS reasons(reason)
-                      WHERE reason LIKE 'lead_score_abaixo_%'
-                    )
-                ) AS rejected_below_score,
+                    WHERE decision='rejected'
+                      AND EXISTS (
+                        SELECT 1 FROM unnest(reason_codes) AS reasons(reason)
+                        WHERE reason LIKE 'lead_score_abaixo_%'
+                           OR reason LIKE 'score_digital_abaixo_%'
+                      )
+                  ) AS rejected_below_score,
                 count(*) FILTER (
-                  WHERE decision='rejected'
-                    AND EXISTS (
-                      SELECT 1 FROM unnest(reason_codes) AS reasons(reason)
-                      WHERE reason LIKE 'pre_score_abaixo_%'
-                    )
-                ) AS rejected_pre_enrichment
+                    WHERE decision='rejected'
+                      AND EXISTS (
+                        SELECT 1 FROM unnest(reason_codes) AS reasons(reason)
+                        WHERE reason LIKE 'pre_score%abaixo_%'
+                      )
+                  ) AS rejected_pre_enrichment
               FROM etl.candidate_decisions
             )
             SELECT
@@ -441,6 +452,12 @@ def _database_telemetry(workflow_run_id: int) -> dict[str, Any]:
             FROM decision_counts
             """
         ).fetchone()
+        counts = (
+            counts[0],counts[1],counts[2],
+            counts[3] + archived_decisions[0],
+            counts[4] + archived_decisions[1],
+            counts[5] + archived_decisions[2],
+        )
         source_rows = conn.execute(
             """
             SELECT source_code,

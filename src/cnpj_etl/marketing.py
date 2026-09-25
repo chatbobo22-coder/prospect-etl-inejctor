@@ -62,8 +62,10 @@ def _fetch_candidates(conn, settings: MarketingSettings) -> list[dict]:
         ({PRE_SCORE_SQL})::smallint AS pre_score
       FROM cnpj.v_prospect_candidates v
       LEFT JOIN etl.candidate_decisions decision ON decision.cnpj=v.cnpj
+      LEFT JOIN cnpj.prospectos_qualificados prospect ON prospect.cnpj=v.cnpj
       LEFT JOIN intelligence.email_verifications ev ON ev.cnpj=v.cnpj
       WHERE decision.cnpj IS NULL
+        AND prospect.cnpj IS NULL
         AND (ev.cnpj IS NULL OR ev.expires_at <= now())
         AND ({PRE_SCORE_SQL}) >= %s
       ORDER BY ({PRE_SCORE_SQL}) DESC,v.cnpj
@@ -165,7 +167,7 @@ def _persist(conn) -> dict[str, int]:
         """
         INSERT INTO etl.candidate_decisions
           (cnpj,cnpj_basico,decision,profile_score,data_confidence_score,lead_score,
-           razao_social,nome_fantasia,telefone,email,reason_codes,source_competence,
+           reason_codes,source_competence,
            evaluated_at,next_review_at,updated_at)
         SELECT cnpj,cnpj_basico,
           CASE WHEN deliverability_status IN ('valid','risky') THEN 'qualified_b'
@@ -173,10 +175,6 @@ def _persist(conn) -> dict[str, int]:
           0,CASE WHEN deliverability_status='valid' THEN 8
                  WHEN deliverability_status='risky' THEN 7 ELSE 0 END,
           pre_score,
-          CASE WHEN deliverability_status='invalid' THEN razao_social END,
-          CASE WHEN deliverability_status='invalid' THEN nome_fantasia END,
-          CASE WHEN deliverability_status='invalid' THEN telefone_1 END,
-          CASE WHEN deliverability_status='invalid' THEN email END,
           reason_codes || ARRAY[
             CASE WHEN deliverability_status IN ('valid','risky')
               THEN 'marketing_email_ready' ELSE 'email_tecnicamente_invalido' END
@@ -268,19 +266,20 @@ def normalize_fast_scores(conn, *, limit: int = 10_000) -> dict:
     ).fetchall()
     conn.execute(
         """
-        UPDATE etl.candidate_decisions d
-        SET decision=CASE WHEN t.new_score>=70 THEN 'qualified_b' ELSE 'rejected' END,
-          lead_score=t.new_score,
-          razao_social=CASE WHEN t.new_score<70 THEN p.razao_social END,
-          nome_fantasia=CASE WHEN t.new_score<70 THEN p.nome_fantasia END,
-          telefone=CASE WHEN t.new_score<70 THEN p.telefone_1 END,
-          email=CASE WHEN t.new_score<70 THEN p.email END,
-          reason_codes=CASE WHEN t.new_score<70
-            THEN ARRAY['pre_score_recalibrado_abaixo_70'] ELSE d.reason_codes END,
-          evaluated_at=now(),updated_at=now()
+        INSERT INTO etl.candidate_decisions
+          (cnpj,cnpj_basico,decision,profile_score,data_confidence_score,lead_score,
+           reason_codes,source_competence,evaluated_at,next_review_at,updated_at)
+        SELECT p.cnpj,p.cnpj_basico,
+          CASE WHEN t.new_score>=70 THEN 'qualified_b' ELSE 'rejected' END,
+          0,0,t.new_score,
+          CASE WHEN t.new_score<70 THEN ARRAY['pre_score_recalibrado_abaixo_70']
+               ELSE ARRAY['pre_score_recalibrado'] END,
+          p.sinais->>'source_competence',now(),now()+interval '30 days',now()
         FROM tmp_fast_reclassified t
         JOIN cnpj.prospectos_qualificados p ON p.cnpj=t.cnpj
-        WHERE d.cnpj=t.cnpj
+        ON CONFLICT (cnpj) DO UPDATE SET decision=EXCLUDED.decision,
+          lead_score=EXCLUDED.lead_score,reason_codes=EXCLUDED.reason_codes,
+          evaluated_at=now(),next_review_at=EXCLUDED.next_review_at,updated_at=now()
         """
     )
     rejected = conn.execute(
@@ -351,19 +350,21 @@ def upgrade_enriched_fast_leads(conn) -> dict:
     if rows:
         conn.execute(
             """
-            UPDATE etl.candidate_decisions decision
-            SET decision=CASE WHEN p.lead_score<70 THEN 'rejected'
-                WHEN p.lead_quality='A' THEN 'qualified_a' ELSE 'qualified_b' END,
-              lead_score=p.lead_score,
-              razao_social=CASE WHEN p.lead_score<70 THEN p.razao_social END,
-              nome_fantasia=CASE WHEN p.lead_score<70 THEN p.nome_fantasia END,
-              telefone=CASE WHEN p.lead_score<70 THEN p.telefone_1 END,
-              email=CASE WHEN p.lead_score<70 THEN p.email END,
-              reason_codes=CASE WHEN p.lead_score<70
-                THEN ARRAY['score_digital_abaixo_70'] ELSE decision.reason_codes END,
-              evaluated_at=now(),updated_at=now()
+            INSERT INTO etl.candidate_decisions
+              (cnpj,cnpj_basico,decision,profile_score,data_confidence_score,lead_score,
+               reason_codes,source_competence,evaluated_at,next_review_at,updated_at)
+            SELECT p.cnpj,p.cnpj_basico,
+              CASE WHEN p.lead_score<70 THEN 'rejected'
+                   WHEN p.lead_quality='A' THEN 'qualified_a' ELSE 'qualified_b' END,
+              0,0,p.lead_score,
+              CASE WHEN p.lead_score<70 THEN ARRAY['score_digital_abaixo_70']
+                   ELSE p.qualification_reasons END,
+              p.sinais->>'source_competence',now(),now()+interval '30 days',now()
             FROM cnpj.prospectos_qualificados p
-            WHERE decision.cnpj=p.cnpj AND p.cnpj=ANY(%s)
+            WHERE p.cnpj=ANY(%s)
+            ON CONFLICT (cnpj) DO UPDATE SET decision=EXCLUDED.decision,
+              lead_score=EXCLUDED.lead_score,reason_codes=EXCLUDED.reason_codes,
+              evaluated_at=now(),next_review_at=EXCLUDED.next_review_at,updated_at=now()
             """,
             ([cnpj for cnpj, _, _ in rows],),
         )

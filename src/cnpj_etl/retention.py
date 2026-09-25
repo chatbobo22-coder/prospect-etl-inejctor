@@ -8,12 +8,43 @@ log = logging.getLogger(__name__)
 
 
 def prune_evaluated_candidates(conn) -> dict[str, int]:
-    """Remove dados intermediários depois que um candidato recebeu decisão definitiva."""
+    """Materializa métricas e mantém detalhes somente dos leads aprovados."""
     stats: dict[str, int] = {}
 
     def execute(name: str, statement: str) -> None:
         result = conn.execute(statement)
         stats[name] = max(0, result.rowcount)
+
+    # Consolida contadores antes de apagar as decisões linha a linha. Isso
+    # preserva a telemetria sem carregar milhões de rejeições no banco.
+    conn.execute(
+        """
+        INSERT INTO etl.funnel_metrics
+          (singleton,rejected,rejected_below_score,rejected_pre_enrichment,updated_at)
+        SELECT true,
+          count(*) FILTER (WHERE decision='rejected'),
+          count(*) FILTER (
+            WHERE decision='rejected' AND EXISTS (
+              SELECT 1 FROM unnest(reason_codes) reason
+              WHERE reason LIKE 'lead_score_abaixo_%'
+                 OR reason LIKE 'score_digital_abaixo_%'
+            )
+          ),
+          count(*) FILTER (
+            WHERE decision='rejected' AND EXISTS (
+              SELECT 1 FROM unnest(reason_codes) reason WHERE reason LIKE 'pre_score%abaixo_%'
+            )
+          ),now()
+        FROM etl.candidate_decisions
+        ON CONFLICT (singleton) DO UPDATE SET
+          rejected=etl.funnel_metrics.rejected+EXCLUDED.rejected,
+          rejected_below_score=etl.funnel_metrics.rejected_below_score
+            +EXCLUDED.rejected_below_score,
+          rejected_pre_enrichment=etl.funnel_metrics.rejected_pre_enrichment
+            +EXCLUDED.rejected_pre_enrichment,
+          updated_at=now()
+        """
+    )
 
     # Nunca mantenha rejeitados na tabela consumida pelo outreach.
     execute(
@@ -65,8 +96,8 @@ def prune_evaluated_candidates(conn) -> dict[str, int]:
         """,
     )
 
-    # A decisão materializa o contato mínimo (rejeitado) ou o prospect completo
-    # (A/B). O cadastro bruto deixa de ter utilidade e pode ser removido.
+    # O prospect A/B já está materializado. Rejeitados não conservam contato;
+    # somente os contadores agregados acima permanecem.
     execute(
         "raw_establishments",
         """
@@ -92,6 +123,8 @@ def prune_evaluated_candidates(conn) -> dict[str, int]:
             )
             """,
         )
+
+    execute("decisions_compacted", "DELETE FROM etl.candidate_decisions")
 
     conn.commit()
     log.info("Retenção do funil aplicada: %s", stats)

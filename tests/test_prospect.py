@@ -58,7 +58,7 @@ def test_tironi_score_is_the_final_score_after_intelligence():
     assert score == 82
 
 
-def test_cheap_prefilter_archives_rejected_contact_before_http():
+def test_cheap_prefilter_keeps_only_temporary_rejection_before_http():
     class Result:
         rowcount = 3
 
@@ -80,8 +80,8 @@ def test_cheap_prefilter_archives_rejected_contact_before_http():
     assert stats == {"rejected": 3, "threshold": 50}
     assert conn.calls[0][1] == (50, 180, 50)
     assert "pre_score_abaixo_" in conn.calls[0][0]
-    assert "v.razao_social" in conn.calls[0][0]
-    assert "v.telefone_1" in conn.calls[0][0]
+    assert "razao_social,nome_fantasia,telefone,email" not in conn.calls[0][0]
+    assert "cnpj.prospectos_qualificados" in conn.calls[0][0]
     assert conn.committed is True
 
 
@@ -258,10 +258,9 @@ def test_early_triage_records_ineligible_and_below_70():
 
     assert stats == {"ineligible": 4, "below_score": 7, "threshold": 70}
     assert conn.calls[1][1] == (70, 180, 70)
-    assert "company.razao_social" in conn.calls[0][0]
-    assert "e.telefone1" in conn.calls[0][0]
-    assert "v.nome_fantasia" in conn.calls[1][0]
-    assert "v.telefone_1" in conn.calls[1][0]
+    assert "razao_social,nome_fantasia,telefone,email" not in conn.calls[0][0]
+    assert "razao_social,nome_fantasia,telefone,email" not in conn.calls[1][0]
+    assert "cnpj.prospectos_qualificados" in conn.calls[0][0]
     assert "lead_score_abaixo_" in conn.calls[1][0]
     assert conn.committed is True
 

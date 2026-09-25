@@ -34,7 +34,11 @@ def sync_qualified_leads(
           END,
           COALESCE(t.tironi_score, p.lead_score),
           p.confidence_score,
-          to_jsonb(p) || jsonb_build_object(
+          jsonb_strip_nulls(jsonb_build_object(
+            'lead_quality', p.lead_quality,
+            'qualification_reasons', p.qualification_reasons,
+            'qualification_version', p.qualification_version,
+            'contact_channel', p.contact_channel,
             'marketing_ready', true,
             'marketing_ready_at', COALESCE(p.qualified_at, now()),
             'tironi_score', t.tironi_score,
@@ -43,7 +47,7 @@ def sync_qualified_leads(
             'recommended_products', t.recommended_products,
             'recommended_plan', t.recommended_plan,
             'next_best_action', t.next_best_action
-          ),
+          )),
           'cnpj_etl',
           'ready',
           now()

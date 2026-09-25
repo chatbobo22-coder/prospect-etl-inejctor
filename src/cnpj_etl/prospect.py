@@ -65,32 +65,31 @@ def reject_before_enrichment(conn, *, min_pre_score: int | None = None) -> dict[
     review_days = _env_int("REJECTED_REVIEW_DAYS", 180)
     # Deve permanecer equivalente a ``calculate_preliminary_score``.
     score_sql = """
-      LEAST(100,
-        20
+      LEAST(95,
+        25
         + CASE WHEN lower(split_part(v.email,'@',2)) IN (
             'gmail.com','hotmail.com','outlook.com','yahoo.com','yahoo.com.br',
             'icloud.com','live.com','bol.com.br','uol.com.br','terra.com.br'
-          ) THEN 10 ELSE 20 END
-        + CASE WHEN NULLIF(btrim(v.telefone_1),'') IS NOT NULL THEN 15 ELSE 0 END
-        + CASE WHEN NULLIF(btrim(v.nome_fantasia),'') IS NOT NULL THEN 10 ELSE 0 END
-        + CASE btrim(COALESCE(v.porte,'')) WHEN '05' THEN 20 WHEN '03' THEN 15
-            WHEN '01' THEN 5 ELSE 0 END
-        + CASE WHEN COALESCE(v.capital_social,0) >= 1000000 THEN 15
+          ) THEN 5 ELSE 15 END
+        + CASE WHEN NULLIF(btrim(v.telefone_1),'') IS NOT NULL THEN 10 ELSE 0 END
+        + CASE WHEN NULLIF(btrim(v.nome_fantasia),'') IS NOT NULL THEN 5 ELSE 0 END
+        + CASE btrim(COALESCE(v.porte,'')) WHEN '05' THEN 10 WHEN '03' THEN 8
+            WHEN '01' THEN 3 ELSE 0 END
+        + CASE WHEN COALESCE(v.capital_social,0) >= 10000000 THEN 20
+            WHEN COALESCE(v.capital_social,0) >= 1000000 THEN 15
             WHEN COALESCE(v.capital_social,0) >= 100000 THEN 10
             WHEN COALESCE(v.capital_social,0) >= 10000 THEN 5 ELSE 0 END
         + CASE WHEN NULLIF(btrim(v.cnae_fiscal_principal),'') IS NOT NULL THEN 5 ELSE 0 END
+        + CASE WHEN v.opcao_simples='S' THEN 5 ELSE 0 END
       )
     """
     result = conn.execute(
         f"""
         INSERT INTO etl.candidate_decisions
           (cnpj,cnpj_basico,decision,profile_score,data_confidence_score,lead_score,
-           razao_social,nome_fantasia,telefone,email,reason_codes,source_competence,
+           reason_codes,source_competence,
            evaluated_at,next_review_at,updated_at)
         SELECT v.cnpj,v.cnpj_basico,'rejected',0,0,({score_sql})::smallint,
-          v.razao_social,v.nome_fantasia,
-          NULLIF(regexp_replace(COALESCE(v.telefone_1,''),'[^0-9]','','g'),''),
-          NULLIF(lower(btrim(v.email)),''),
           ARRAY['pre_score_abaixo_' || %s::text]::text[],v.source_competence,
           now(),now()+(%s * interval '1 day'),now()
         FROM cnpj.v_prospect_candidates v
@@ -99,6 +98,9 @@ def reject_before_enrichment(conn, *, min_pre_score: int | None = None) -> dict[
           AND ({score_sql}) < %s
           AND NOT EXISTS (
             SELECT 1 FROM etl.candidate_decisions decision WHERE decision.cnpj=v.cnpj
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM cnpj.prospectos_qualificados prospect WHERE prospect.cnpj=v.cnpj
           )
         ON CONFLICT (cnpj) DO NOTHING
         """,
@@ -113,8 +115,8 @@ def reject_before_enrichment(conn, *, min_pre_score: int | None = None) -> dict[
 def reject_before_intelligence(conn, *, min_lead_score: int | None = None) -> dict[str, int]:
     """Descarta cedo o que não deve consumir consultas de inteligência.
 
-    Mantém a decisão e o contato mínimo em ``etl.candidate_decisions``. Os
-    dados brutos e derivados são removidos por ``prune_evaluated_candidates``.
+    Mantém apenas uma decisão temporária. Os detalhes rejeitados são removidos
+    por ``prune_evaluated_candidates`` para não consumir armazenamento.
     """
     threshold = (
         _env_int("PROSPECT_MIN_LEAD_SCORE", 70)
@@ -127,18 +129,9 @@ def reject_before_intelligence(conn, *, min_lead_score: int | None = None) -> di
         """
         INSERT INTO etl.candidate_decisions
           (cnpj,cnpj_basico,decision,profile_score,data_confidence_score,
-           lead_score,razao_social,nome_fantasia,telefone,email,
+           lead_score,
            reason_codes,source_competence,evaluated_at,next_review_at,updated_at)
         SELECT e.cnpj,e.cnpj_basico,'rejected',0,0,0,
-          company.razao_social,e.nome_fantasia,
-          NULLIF(
-            regexp_replace(
-              COALESCE(e.ddd1,'') || COALESCE(e.telefone1,''),
-              '[^0-9]','','g'
-            ),
-            ''
-          ),
-          NULLIF(lower(btrim(e.correio_eletronico)),''),
           CASE WHEN COALESCE(s.opcao_mei,'N')='S'
             THEN ARRAY['mei_excluido_pre_enriquecimento']::text[]
             ELSE ARRAY['fora_filtro_pre_enriquecimento']::text[]
@@ -156,6 +149,9 @@ def reject_before_intelligence(conn, *, min_lead_score: int | None = None) -> di
           AND NOT EXISTS (
             SELECT 1 FROM etl.candidate_decisions decision WHERE decision.cnpj=e.cnpj
           )
+          AND NOT EXISTS (
+            SELECT 1 FROM cnpj.prospectos_qualificados prospect WHERE prospect.cnpj=e.cnpj
+          )
         ON CONFLICT (cnpj) DO NOTHING
         """,
         (review_days,),
@@ -165,14 +161,11 @@ def reject_before_intelligence(conn, *, min_lead_score: int | None = None) -> di
         """
         INSERT INTO etl.candidate_decisions
           (cnpj,cnpj_basico,decision,profile_score,data_confidence_score,
-           lead_score,razao_social,nome_fantasia,telefone,email,
+           lead_score,
            reason_codes,source_competence,evaluated_at,next_review_at,updated_at)
         SELECT d.cnpj,d.cnpj_basico,'rejected',
           LEAST(100,GREATEST(0,COALESCE(d.lead_score,0)))::smallint,0,
           LEAST(100,GREATEST(0,COALESCE(d.lead_score,0)))::smallint,
-          v.razao_social,v.nome_fantasia,
-          NULLIF(regexp_replace(COALESCE(v.telefone_1,''),'[^0-9]','','g'),''),
-          NULLIF(lower(btrim(v.email)),''),
           ARRAY['lead_score_abaixo_' || %s::text]::text[],
           v.source_competence,now(),now()+(%s * interval '1 day'),now()
         FROM cnpj.digital_presenca d
@@ -181,6 +174,9 @@ def reject_before_intelligence(conn, *, min_lead_score: int | None = None) -> di
           AND COALESCE(d.lead_score,0) < %s
           AND NOT EXISTS (
             SELECT 1 FROM etl.candidate_decisions decision WHERE decision.cnpj=d.cnpj
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM cnpj.prospectos_qualificados prospect WHERE prospect.cnpj=d.cnpj
           )
         ON CONFLICT (cnpj) DO NOTHING
         """,
@@ -595,15 +591,13 @@ def promote_qualified(conn) -> dict[str, int]:
             """
             INSERT INTO etl.candidate_decisions
               (cnpj,cnpj_basico,decision,profile_score,data_confidence_score,
-               lead_score,razao_social,nome_fantasia,telefone,email,
+               lead_score,
                reason_codes,source_competence,evaluated_at,next_review_at,updated_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),now()+interval '30 days',now())
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,now(),now()+interval '30 days',now())
             ON CONFLICT (cnpj) DO UPDATE SET
               decision=EXCLUDED.decision,profile_score=EXCLUDED.profile_score,
               data_confidence_score=EXCLUDED.data_confidence_score,
-              lead_score=EXCLUDED.lead_score,razao_social=EXCLUDED.razao_social,
-              nome_fantasia=EXCLUDED.nome_fantasia,telefone=EXCLUDED.telefone,
-              email=EXCLUDED.email,
+              lead_score=EXCLUDED.lead_score,
               reason_codes=EXCLUDED.reason_codes,source_competence=EXCLUDED.source_competence,
               evaluated_at=now(),next_review_at=EXCLUDED.next_review_at,updated_at=now()
             """,
@@ -614,10 +608,6 @@ def promote_qualified(conn) -> dict[str, int]:
                 item.get("profile_score") or 0,
                 item.get("data_confidence_score") or 0,
                 item.get("lead_score") or 0,
-                item.get("razao_social") if decision == "rejected" else None,
-                item.get("nome_fantasia") if decision == "rejected" else None,
-                item.get("telefone_1") if decision == "rejected" else None,
-                item.get("email") if decision == "rejected" else None,
                 rejection or reasons,
                 item.get("source_competence"),
             ),

@@ -90,13 +90,17 @@ def test_quality_storage_funnel_keeps_only_ab_in_commercial_view():
     assert "p.lead_quality IN ('A', 'B')" in text
 
 
-def test_rejected_contact_archive_keeps_only_compact_contact_fields():
+def test_rejected_details_are_not_stored_and_old_columns_are_removed():
     sql_dir = Path(__file__).resolve().parents[1] / "sql"
     text = (sql_dir / "018_rejected_contact_archive.sql").read_text(encoding="utf-8")
+    compact = (sql_dir / "025_compact_funnel_metrics.sql").read_text(encoding="utf-8")
     assert "ALTER TABLE etl.candidate_decisions" in text
-    for field in ("razao_social", "nome_fantasia", "telefone", "email", "lead_score"):
-        assert field in text
-    assert "WHERE decision = 'rejected'" in text
+    assert "ADD COLUMN IF NOT EXISTS lead_score" in text
+    for field in ("razao_social", "nome_fantasia", "telefone", "email"):
+        assert f"ADD COLUMN IF NOT EXISTS {field}" not in text
+    assert "DROP COLUMN IF EXISTS razao_social" in compact
+    assert "DROP COLUMN IF EXISTS email" in compact
+    assert "CREATE TABLE IF NOT EXISTS etl.funnel_metrics" in compact
 
 
 def test_professional_network_migration_registers_sources_and_presence_score():
