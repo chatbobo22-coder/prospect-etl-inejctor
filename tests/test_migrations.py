@@ -103,6 +103,14 @@ def test_rejected_details_are_not_stored_and_old_columns_are_removed():
     assert "CREATE TABLE IF NOT EXISTS etl.funnel_metrics" in compact
 
 
+def test_compact_enrichment_view_can_replace_wider_legacy_view():
+    sql_dir = Path(__file__).resolve().parents[1] / "sql"
+    text = (sql_dir / "024_pause_and_compact.sql").read_text(encoding="utf-8")
+    assert "DROP VIEW IF EXISTS cnpj.v_marketing_enrichment_candidates;" in text
+    assert "CREATE VIEW cnpj.v_marketing_enrichment_candidates AS" in text
+    assert "CREATE OR REPLACE VIEW cnpj.v_marketing_enrichment_candidates" not in text
+
+
 def test_professional_network_migration_registers_sources_and_presence_score():
     sql_dir = Path(__file__).resolve().parents[1] / "sql"
     text = (sql_dir / "019_professional_network_intelligence.sql").read_text(encoding="utf-8")

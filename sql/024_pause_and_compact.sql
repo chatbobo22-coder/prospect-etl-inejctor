@@ -5,7 +5,10 @@ ALTER TABLE etl.runs
 
 -- O prospect materializado possui o necessário para continuar o crawling;
 -- assim o cadastro bruto pode ser removido depois da decisão.
-CREATE OR REPLACE VIEW cnpj.v_marketing_enrichment_candidates AS
+-- A migration 022 cria esta view com SELECT v.*. Ao reaplicar todas as
+-- migrations, CREATE OR REPLACE não consegue remover as colunas excedentes.
+DROP VIEW IF EXISTS cnpj.v_marketing_enrichment_candidates;
+CREATE VIEW cnpj.v_marketing_enrichment_candidates AS
 SELECT
   p.cnpj,p.cnpj_basico,p.email,p.telefone_1,p.nome_fantasia,p.razao_social,
   p.uf,p.municipio_descricao,
