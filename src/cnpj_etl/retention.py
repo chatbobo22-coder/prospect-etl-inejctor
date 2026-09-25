@@ -65,22 +65,14 @@ def prune_evaluated_candidates(conn) -> dict[str, int]:
         """,
     )
 
-    # Rejeitados saem imediatamente. Aprovados pelo caminho rápido mantêm o
-    # cadastro bruto até o enriquecimento digital assíncrono terminar.
+    # A decisão materializa o contato mínimo (rejeitado) ou o prospect completo
+    # (A/B). O cadastro bruto deixa de ter utilidade e pode ser removido.
     execute(
         "raw_establishments",
         """
         DELETE FROM cnpj.estabelecimentos item
         USING etl.candidate_decisions d
         WHERE item.cnpj=d.cnpj
-          AND (
-            d.decision='rejected'
-            OR EXISTS (
-              SELECT 1 FROM cnpj.digital_presenca digital
-              WHERE digital.cnpj=item.cnpj
-                AND digital.enrich_status IN ('done','partial','no_site','failed')
-            )
-          )
         """,
     )
     for name, table in (

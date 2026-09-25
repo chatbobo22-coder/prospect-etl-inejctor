@@ -25,6 +25,7 @@ from .prospect import (
 )
 from .retention import prune_evaluated_candidates
 from .source import RfbSource
+from .storage_cleanup import cleanup_storage
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -119,6 +120,10 @@ def main():
     sub.add_parser(
         "publish-ready",
         help="Qualifica candidatos prontos e publica A/B no Outreach",
+    )
+    sub.add_parser(
+        "cleanup-storage",
+        help="Remove intermediários decididos e compacta tabelas (exige carga pausada)",
     )
     prospect = sub.add_parser(
         "prospect-pipeline",
@@ -228,6 +233,10 @@ def main():
         with db.connect() as conn:
             stats = publish_marketing_ready(conn)
         logging.info("Publicação rápida concluída: %s", stats)
+    elif args.command == "cleanup-storage":
+        db.migrate(sql_dir)
+        stats = cleanup_storage(db)
+        logging.info("Limpeza de armazenamento concluída: %s", stats)
     elif args.command == "prospect-pipeline":
         db.migrate(sql_dir)
         batch_size = args.batch_size or int(os.getenv("ENRICH_BATCH_SIZE", "250"))

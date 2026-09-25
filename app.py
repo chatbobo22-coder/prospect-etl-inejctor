@@ -774,6 +774,42 @@ def start_injector(config: InjectorConfig):
     return {"started": True, "workflow": workflow}
 
 
+def _dispatch_auxiliary_workflow(filename: str) -> None:
+    response = requests.post(
+        f"https://api.github.com/repos/{_github_repo()}/actions/workflows/{filename}/dispatches",
+        headers=_github_headers(require_token=True),
+        json={"ref": os.getenv("GITHUB_WORKFLOW_REF", "main")},
+        timeout=20,
+    )
+    if response.status_code != 204:
+        log.error("GitHub workflow dispatch failed: %s %s", response.status_code, response.text)
+        raise HTTPException(status_code=502, detail="Não foi possível iniciar a operação")
+
+
+@app.post(
+    "/api/publish-qualified",
+    dependencies=[Depends(_require_write_api_key)],
+    status_code=202,
+)
+def publish_qualified():
+    """Publica A/B no Outreach sem interferir no workflow de carga."""
+    workflow = os.getenv("GITHUB_PUBLISH_WORKFLOW_FILE", "publish-qualified.yml")
+    _dispatch_auxiliary_workflow(workflow)
+    return {"started": True, "workflow": workflow}
+
+
+@app.post(
+    "/api/cleanup-storage",
+    dependencies=[Depends(_require_write_api_key)],
+    status_code=202,
+)
+def cleanup_storage():
+    """Compacta intermediários; o job recusa executar com ETL ativa."""
+    workflow = os.getenv("GITHUB_CLEANUP_WORKFLOW_FILE", "cleanup-storage.yml")
+    _dispatch_auxiliary_workflow(workflow)
+    return {"started": True, "workflow": workflow}
+
+
 @app.get("/api/workflow-runs", dependencies=[Depends(_require_api_key)])
 def workflow_runs(limit: int = Query(default=10, ge=1, le=50)):
     workflow = os.getenv("GITHUB_WORKFLOW_FILE", "prospect-pipeline.yml")
@@ -894,6 +930,41 @@ def cancel_workflow_run(run_id: int):
     except Exception:
         log.exception("Could not mark workflow %s as cancelled", run_id)
     return {"cancelled": True, "run_id": run_id}
+
+
+@app.post(
+    "/api/workflow-runs/{run_id}/pause",
+    dependencies=[Depends(_require_write_api_key)],
+    status_code=202,
+)
+def pause_workflow_run(run_id: int):
+    """Pausa por cancelamento recuperável; o cursor permanece no banco."""
+    run, _, _ = _github_run(run_id)
+    if run["status"] == "completed":
+        raise HTTPException(status_code=409, detail="Esta execução já terminou")
+    response = requests.post(
+        f"https://api.github.com/repos/{_github_repo()}/actions/runs/{run_id}/cancel",
+        headers=_github_headers(require_token=True),
+        timeout=20,
+    )
+    if response.status_code not in {202, 409}:
+        raise HTTPException(status_code=502, detail="Não foi possível pausar a execução")
+    try:
+        database = Database(Settings().database_url)
+        with database.connect() as conn:
+            conn.execute(
+                """
+                UPDATE etl.runs
+                SET status='paused',finished_at=COALESCE(finished_at,now()),
+                    cancel_requested_at=now()
+                WHERE workflow_run_id=%s AND status='running'
+                """,
+                (run_id,),
+            )
+            conn.commit()
+    except Exception:
+        log.exception("Could not mark workflow %s as paused", run_id)
+    return {"paused": True, "resumable": True, "run_id": run_id}
 
 
 @app.get("/api/db", dependencies=[Depends(_require_api_key)])

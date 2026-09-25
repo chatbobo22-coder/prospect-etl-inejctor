@@ -91,6 +91,38 @@ def sync_qualified_leads(
         """,
         (cnpjs,) if cnpjs is not None else None,
     )
+    if conn.execute("SELECT to_regclass('outreach.lead_metrics') IS NOT NULL").fetchone()[0]:
+        conn.execute(
+            """
+            INSERT INTO outreach.lead_metrics
+              (singleton,total,quality_a,quality_b,with_whatsapp,public_profile,
+               score_sum,updated_at)
+            SELECT true,
+              count(*) FILTER (WHERE email IS NOT NULL),
+              count(*) FILTER (
+                WHERE email IS NOT NULL AND source_payload->>'lead_quality'='A'
+              ),
+              count(*) FILTER (
+                WHERE email IS NOT NULL AND source_payload->>'lead_quality'='B'
+              ),
+              count(*) FILTER (
+                WHERE email IS NOT NULL AND NULLIF(whatsapp,'') IS NOT NULL
+              ),
+              count(*) FILTER (
+                WHERE email IS NOT NULL
+                  AND source_payload->'qualification_reasons'
+                    ? 'perfil_publico_verificado'
+              ),
+              COALESCE(sum(COALESCE(lead_score,0)) FILTER (WHERE email IS NOT NULL),0),
+              now()
+            FROM outreach.leads
+            ON CONFLICT (singleton) DO UPDATE SET
+              total=EXCLUDED.total,quality_a=EXCLUDED.quality_a,
+              quality_b=EXCLUDED.quality_b,with_whatsapp=EXCLUDED.with_whatsapp,
+              public_profile=EXCLUDED.public_profile,score_sum=EXCLUDED.score_sum,
+              updated_at=now()
+            """
+        )
     if commit:
         conn.commit()
     log.info("Outreach sincronizado: %s leads A/B", result.rowcount)

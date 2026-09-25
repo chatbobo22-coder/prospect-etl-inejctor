@@ -10,6 +10,8 @@ class SyncConnection:
         self.committed = False
 
     def execute(self, query, params=None):
+        if "to_regclass('outreach.lead_metrics')" in query:
+            return SimpleNamespace(fetchone=lambda: (False,))
         self.query = query
         self.params = params
         return SimpleNamespace(rowcount=7)
