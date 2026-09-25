@@ -20,7 +20,10 @@ ALTER TABLE intelligence.source_runs
 ALTER TABLE etl.runs DROP CONSTRAINT IF EXISTS runs_status_check;
 ALTER TABLE etl.runs
   ADD CONSTRAINT runs_status_check
-  CHECK (status IN ('running','success','failed','skipped','cancelled'));
+  -- Migrations are replayed on every pipeline start. Keep states introduced by
+  -- later migrations here too, otherwise replaying 015 rejects paused runs
+  -- before 024 has a chance to recreate the constraint.
+  CHECK (status IN ('running','success','failed','skipped','cancelled','paused'));
 
 CREATE INDEX IF NOT EXISTS idx_etl_runs_workflow_run_id
   ON etl.runs (workflow_run_id)

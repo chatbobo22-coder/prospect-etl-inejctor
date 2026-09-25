@@ -130,3 +130,16 @@ def test_injector_runtime_control_tracks_live_progress():
 
     for field in ("downloaded_bytes", "scanned_rows", "skipped_rows", "activity_at"):
         assert field in text
+
+
+def test_runtime_control_replay_keeps_paused_runs_valid():
+    sql_dir = Path(__file__).resolve().parents[1] / "sql"
+    runtime_control = (sql_dir / "015_injector_runtime_control.sql").read_text(
+        encoding="utf-8"
+    )
+    pause_migration = (sql_dir / "024_pause_and_compact.sql").read_text(
+        encoding="utf-8"
+    )
+
+    assert "'paused'" in runtime_control
+    assert "'paused'" in pause_migration
