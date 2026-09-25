@@ -9,7 +9,12 @@ from zipfile import ZipFile
 from psycopg import sql
 from psycopg.errors import QueryCanceled
 
-from .filters import should_load_row, track_estabelecimento
+from .filters import (
+    all_company_basics_resolved,
+    should_load_row,
+    track_estabelecimento,
+    track_supporting_row,
+)
 from .schema import DATASETS, DATE_COLUMNS
 
 log = logging.getLogger(__name__)
@@ -229,6 +234,8 @@ def load_zip(
                 else:
                     if kind == "Estabelecimentos" and filter_ctx:
                         track_estabelecimento(item, filter_ctx)
+                    elif filter_ctx:
+                        track_supporting_row(kind, item, filter_ctx)
                     chunk.append(item)
                     if len(chunk) >= chunk_size:
                         flush_chunk(conn, table, chunk, conflict, kind=kind, label=display_name)
@@ -242,6 +249,10 @@ def load_zip(
                         and len(filter_ctx.selected_cnpjs) >= filter_ctx.max_candidates
                     ):
                         stopped_early = True
+                        break
+                    if kind == "Empresas" and all_company_basics_resolved(filter_ctx):
+                        # Todos os CNPJs básicos selecionados neste lote já
+                        # apareceram. O restante deste ZIP não pode gerar linhas.
                         break
                 if scanned % log_progress_every == 0:
                     matched = count + len(chunk)

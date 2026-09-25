@@ -16,13 +16,12 @@ from .digital_enricher import (
 from .ibge_population import ensure_municipios_populacao
 from .intelligence import IntelligenceSettings, run_intelligence, run_intelligence_until_empty
 from .intent.service import rebuild_profiles
+from .marketing import MarketingSettings, publish_marketing_ready
 from .outreach_sync import sync_qualified_leads
 from .pipeline import run
 from .prospect import (
-    CORE_INTELLIGENCE_SOURCES,
     promote_qualified,
     reject_before_enrichment,
-    reject_before_intelligence,
 )
 from .retention import prune_evaluated_candidates
 from .source import RfbSource
@@ -40,44 +39,26 @@ def run_fast_lead_cycle(conn, remote, rows: int) -> None:
     if remote.file_type != "Empresas" or rows <= 0:
         return
 
-    batch_size = int(os.getenv("FAST_LEAD_BATCH_SIZE", "100"))
-    entry_threshold = int(os.getenv("INTELLIGENCE_ENTRY_MIN_SCORE", "35"))
+    batch_size = int(os.getenv("MARKETING_BATCH_SIZE", "100000"))
     logging.info(
-        "[FAST-LEAD] %s carregado; validando até %s melhores candidatos agora",
+        "[FAST-LEAD] %s carregado; validando até %s e-mails sem crawling",
         remote.name,
         batch_size,
     )
-    prefilter_stats = reject_before_enrichment(conn)
-    prefilter_retention = prune_evaluated_candidates(conn)
-    enrich_stats = run_enrichment(conn, EnrichSettings(batch_size=batch_size))
-    triage_stats = reject_before_intelligence(conn, min_lead_score=entry_threshold)
-    retention_before = prune_evaluated_candidates(conn)
-
-    intelligence_stats = run_intelligence(
-        conn,
-        replace(
-            IntelligenceSettings(),
-            sources=CORE_INTELLIGENCE_SOURCES,
-            batch_size=batch_size,
-            min_lead_score=entry_threshold,
-            max_rounds=1,
-        ),
+    prefilter_stats = reject_before_enrichment(
+        conn, min_pre_score=int(os.getenv("PROSPECT_MIN_LEAD_SCORE", "70"))
     )
-    qualify_stats = promote_qualified(conn)
-    synced = sync_qualified_leads(conn)
+    prefilter_retention = prune_evaluated_candidates(conn)
+    publish_stats = publish_marketing_ready(
+        conn, replace(MarketingSettings(), batch_size=batch_size)
+    )
     retention_after = prune_evaluated_candidates(conn)
     logging.info(
-        "[FAST-LEAD] lote publicado: prefilter=%s prefilter_retention=%s "
-        "enrich=%s triagem=%s intelligence=%s qualify=%s outreach=%s "
-        "retention_before=%s retention_after=%s",
+        "[FAST-LEAD] lote publicado antes do enriquecimento profundo: "
+        "prefilter=%s prefilter_retention=%s publish=%s retention=%s",
         prefilter_stats,
         prefilter_retention,
-        enrich_stats,
-        triage_stats,
-        intelligence_stats,
-        qualify_stats,
-        synced,
-        retention_before,
+        publish_stats,
         retention_after,
     )
 
@@ -245,133 +226,31 @@ def main():
     elif args.command == "publish-ready":
         db.migrate(sql_dir)
         with db.connect() as conn:
-            qualify_stats = promote_qualified(conn)
-            synced = sync_qualified_leads(conn)
-        logging.info(
-            "Publicação incremental concluída: qualify=%s outreach=%s",
-            qualify_stats,
-            synced,
-        )
+            stats = publish_marketing_ready(conn)
+        logging.info("Publicação rápida concluída: %s", stats)
     elif args.command == "prospect-pipeline":
         db.migrate(sql_dir)
-        batch_size = args.batch_size or int(os.getenv("ENRICH_BATCH_SIZE", "500"))
+        batch_size = args.batch_size or int(os.getenv("ENRICH_BATCH_SIZE", "250"))
         settings_obj = EnrichSettings(batch_size=batch_size)
         with db.connect() as conn:
-            entry_threshold = int(os.getenv("INTELLIGENCE_ENTRY_MIN_SCORE", "35"))
-            prefilter_stats = reject_before_enrichment(conn)
+            min_score = int(os.getenv("PROSPECT_MIN_LEAD_SCORE", "70"))
+            prefilter_stats = reject_before_enrichment(conn, min_pre_score=min_score)
             prefilter_retention = prune_evaluated_candidates(conn)
-            initial_triage = reject_before_intelligence(
-                conn, min_lead_score=entry_threshold
+            publish_stats = publish_marketing_ready(conn)
+            # Crawling é aprofundamento, não porta de entrada. Uma rodada
+            # pequena mantém o perfil evoluindo sem bloquear o próximo lote.
+            enrich_stats = run_enrichment(
+                conn, settings_obj, force=args.force_enrich
             )
-            initial_retention = prune_evaluated_candidates(conn)
-
-            def triage_round(round_number: int, round_stats: dict) -> None:
-                rejected = reject_before_intelligence(
-                    conn, min_lead_score=entry_threshold
-                )
-                retained = prune_evaluated_candidates(conn)
-                logging.info(
-                    "Funil contínuo rodada=%s enrich=%s rejeitados=%s retenção=%s",
-                    round_number,
-                    round_stats,
-                    rejected,
-                    retained,
-                )
-
-            enrich_stats = run_enrichment_until_empty(
-                conn,
-                settings_obj,
-                force=args.force_enrich,
-                after_round=triage_round,
-            )
-            final_triage = reject_before_intelligence(
-                conn, min_lead_score=entry_threshold
-            )
-            pre_intelligence_retention = prune_evaluated_candidates(conn)
-
-            def publish_round(round_number: int, round_stats: dict) -> None:
-                qualify_round = promote_qualified(conn)
-                synced_round = sync_qualified_leads(conn)
-                logging.info(
-                    "Publicação incremental rodada=%s intelligence=%s qualify=%s outreach=%s",
-                    round_number,
-                    round_stats,
-                    qualify_round,
-                    synced_round,
-                )
-
-            configured_intelligence = IntelligenceSettings()
-            core_sources = tuple(
-                source
-                for source in CORE_INTELLIGENCE_SOURCES
-                if source in configured_intelligence.sources
-            )
-            deferred_sources = tuple(
-                source
-                for source in configured_intelligence.sources
-                if source not in CORE_INTELLIGENCE_SOURCES and source != "gdelt"
-            )
-            slow_sources = tuple(
-                source for source in configured_intelligence.sources if source == "gdelt"
-            )
-            core_stats = (
-                run_intelligence_until_empty(
-                    conn,
-                    replace(configured_intelligence, sources=core_sources),
-                    after_round=publish_round,
-                )
-                if core_sources
-                else {"processed": 0, "rounds": 0}
-            )
-            # Receita + validade técnica do e-mail bastam para publicar. As
-            # demais fontes aprofundam o CRM sem segurar a fila de marketing.
-            qualify_core = promote_qualified(conn)
-            synced_core = sync_qualified_leads(conn)
-            logging.info(
-                "Leads prontos para marketing publicados: intelligence=%s qualify=%s outreach=%s",
-                core_stats,
-                qualify_core,
-                synced_core,
-            )
-            deferred_stats = (
-                run_intelligence_until_empty(
-                    conn,
-                    replace(configured_intelligence, sources=deferred_sources),
-                    after_round=publish_round,
-                )
-                if deferred_sources
-                else {"processed": 0, "rounds": 0}
-            )
-            slow_stats = (
-                run_intelligence(
-                    conn,
-                    replace(configured_intelligence, sources=slow_sources),
-                )
-                if slow_sources
-                else {"processed": 0}
-            )
-            intelligence_stats = {
-                "core": core_stats,
-                "deferred": deferred_stats,
-                "optional": slow_stats,
-            }
-            qualify_stats = promote_qualified(conn)
             synced = sync_qualified_leads(conn)
             retention_stats = prune_evaluated_candidates(conn)
         logging.info(
-            "Pipeline prospect: prefilter=%s prefilter_retention=%s "
-            "triagem_inicial=%s retenção_inicial=%s enrich=%s "
-            "triagem_final=%s retenção_pre_inteligência=%s intelligence=%s "
-            "qualify=%s outreach=%s retention=%s",
+            "Pipeline prospect rápido: prefilter=%s retention_before=%s "
+            "publish=%s deep_enrich_bounded=%s outreach=%s retention_after=%s",
             prefilter_stats,
             prefilter_retention,
-            initial_triage,
-            initial_retention,
+            publish_stats,
             enrich_stats,
-            final_triage,
-            pre_intelligence_retention,
-            intelligence_stats,
-            qualify_stats,
             synced,
             retention_stats,
         )

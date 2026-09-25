@@ -115,31 +115,15 @@ def test_fast_lead_cycle_publishes_after_company_file(monkeypatch):
         "reject_before_enrichment",
         lambda *_a, **_k: calls.append("prefilter") or {},
     )
-    monkeypatch.setattr(cli, "run_enrichment", lambda *_a, **_k: calls.append("enrich") or {})
     monkeypatch.setattr(
         cli,
-        "reject_before_intelligence",
-        lambda *_a, **_k: calls.append("triage") or {},
+        "publish_marketing_ready",
+        lambda *_a, **_k: calls.append("publish") or {},
     )
     monkeypatch.setattr(
         cli,
         "prune_evaluated_candidates",
         lambda *_a, **_k: calls.append("prune") or {},
-    )
-    monkeypatch.setattr(
-        cli,
-        "run_intelligence",
-        lambda *_a, **_k: calls.append("intelligence") or {},
-    )
-    monkeypatch.setattr(
-        cli,
-        "promote_qualified",
-        lambda *_a, **_k: calls.append("qualify") or {},
-    )
-    monkeypatch.setattr(
-        cli,
-        "sync_qualified_leads",
-        lambda *_a, **_k: calls.append("outreach") or 1,
     )
     remote = type("Remote", (), {"file_type": "Empresas", "name": "Empresas0.zip"})()
 
@@ -148,11 +132,6 @@ def test_fast_lead_cycle_publishes_after_company_file(monkeypatch):
     assert calls == [
         "prefilter",
         "prune",
-        "enrich",
-        "triage",
-        "prune",
-        "intelligence",
-        "qualify",
-        "outreach",
+        "publish",
         "prune",
     ]

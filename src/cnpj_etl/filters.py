@@ -18,7 +18,6 @@ FILTER_FILE_TYPES = frozenset(
         "Estabelecimentos",
         "Empresas",
         "Simples",
-        "Socios",
     }
 )
 
@@ -57,6 +56,7 @@ class FilterContext:
     excluded_cnpjs: frozenset[str] = field(default_factory=frozenset)
     selected_cnpjs: set[str] = field(default_factory=set)
     matched_basics: set[str] = field(default_factory=set)
+    resolved_company_basics: set[str] = field(default_factory=set)
 
     @property
     def enabled(self) -> bool:
@@ -196,3 +196,19 @@ def track_estabelecimento(item: dict, ctx: FilterContext) -> None:
     basic = item.get("cnpj_basico")
     if basic:
         ctx.matched_basics.add(basic)
+
+
+def track_supporting_row(kind: str, item: dict, ctx: FilterContext) -> None:
+    """Registra quais razões sociais do lote já foram localizadas."""
+    if kind == "Empresas":
+        basic = item.get("cnpj_basico")
+        if basic:
+            ctx.resolved_company_basics.add(basic)
+
+
+def all_company_basics_resolved(ctx: FilterContext | None) -> bool:
+    return bool(
+        ctx
+        and ctx.matched_basics
+        and ctx.matched_basics.issubset(ctx.resolved_company_basics)
+    )

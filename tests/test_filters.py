@@ -70,6 +70,17 @@ def test_empresa_follows_estabelecimento():
     assert not should_load_row("Empresas", {"cnpj_basico": "99999999"}, ctx)
 
 
+def test_company_resolution_is_complete_only_after_every_basic_was_seen():
+    from cnpj_etl.filters import all_company_basics_resolved, track_supporting_row
+
+    ctx = FilterContext(frozenset())
+    ctx.matched_basics.update({"12345678", "87654321"})
+    track_supporting_row("Empresas", {"cnpj_basico": "12345678"}, ctx)
+    assert not all_company_basics_resolved(ctx)
+    track_supporting_row("Empresas", {"cnpj_basico": "87654321"}, ctx)
+    assert all_company_basics_resolved(ctx)
+
+
 def test_uf_filter():
     ctx = FilterContext(frozenset(["4751201"]), active_only=True, ufs=frozenset(["PR"]))
     item = {

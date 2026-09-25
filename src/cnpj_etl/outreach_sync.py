@@ -5,10 +5,13 @@ import logging
 log = logging.getLogger(__name__)
 
 
-def sync_qualified_leads(conn, *, commit: bool = True) -> int:
+def sync_qualified_leads(
+    conn, *, commit: bool = True, cnpjs: list[str] | None = None
+) -> int:
     """Insere e atualiza somente leads A/B qualificados em ``outreach.leads``."""
+    candidate_filter = "AND p.cnpj = ANY(%s)" if cnpjs is not None else ""
     result = conn.execute(
-        r"""
+        rf"""
         INSERT INTO outreach.leads
           (cnpj, company_name, trade_name, email, email_domain, phone, whatsapp, contact_role,
            lead_score, confidence_score, source_payload, source, status, updated_at)
@@ -50,6 +53,7 @@ def sync_qualified_leads(conn, *, commit: bool = True) -> int:
           AND p.lead_quality IN ('A', 'B')
           AND p.email IS NOT NULL
           AND btrim(p.email) ~* '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$'
+          {candidate_filter}
         ON CONFLICT (cnpj) DO UPDATE SET
           company_name = EXCLUDED.company_name,
           trade_name = EXCLUDED.trade_name,
@@ -84,7 +88,8 @@ def sync_qualified_leads(conn, *, commit: bool = True) -> int:
           EXCLUDED.confidence_score,
           EXCLUDED.source_payload
         )
-        """
+        """,
+        (cnpjs,) if cnpjs is not None else None,
     )
     if commit:
         conn.commit()

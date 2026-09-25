@@ -3,7 +3,7 @@ from dataclasses import replace
 import os
 from collections.abc import Callable
 
-from .filters import FILE_LOAD_ORDER, FilterContext
+from .filters import FILE_LOAD_ORDER, FilterContext, all_company_basics_resolved
 from .ibge_population import ensure_municipios_populacao, load_allowed_municipios
 from .loader import load_zip
 from .source import fmt_bytes
@@ -188,6 +188,30 @@ def run(
         file_total = len(files)
         try:
             for index, remote in enumerate(files, start=1):
+                if remote.file_type == "Empresas" and all_company_basics_resolved(filter_ctx):
+                    log.info(
+                        "[FAST-LOAD] Todas as %s razões sociais foram encontradas; "
+                        "ignorando %s e os próximos ZIPs de Empresas",
+                        len(filter_ctx.matched_basics),
+                        remote.name,
+                    )
+                    lock_conn.execute(
+                        "INSERT INTO etl.files "
+                        "(competence,file_name,file_type,source_url,status,rows_processed,"
+                        "last_run_rows,processed_at,activity_at) "
+                        "VALUES (%s,%s,%s,%s,'success',0,0,now(),now()) "
+                        "ON CONFLICT (competence,file_name) DO UPDATE SET "
+                        "status='success',last_run_rows=0,"
+                        "processed_at=now(),activity_at=now(),error_message=NULL",
+                        (competence, remote.name, remote.file_type, remote.url),
+                    )
+                    processed += 1
+                    lock_conn.execute(
+                        "UPDATE etl.runs SET files_processed=%s WHERE id=%s",
+                        (processed, run_id),
+                    )
+                    lock_conn.commit()
+                    continue
                 source_size, source_last_modified = source.metadata(remote)
                 log.info(
                     "[%s/%s] %s (%s) — remoto %s",

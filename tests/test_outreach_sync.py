@@ -6,10 +6,12 @@ from cnpj_etl.outreach_sync import sync_qualified_leads
 class SyncConnection:
     def __init__(self):
         self.query = ""
+        self.params = None
         self.committed = False
 
     def execute(self, query, params=None):
         self.query = query
+        self.params = params
         return SimpleNamespace(rowcount=7)
 
     def commit(self):
@@ -39,3 +41,12 @@ def test_sync_can_share_an_outer_transaction():
     sync_qualified_leads(conn, commit=False)
 
     assert not conn.committed
+
+
+def test_sync_can_limit_work_to_current_batch():
+    conn = SyncConnection()
+
+    sync_qualified_leads(conn, cnpjs=["12345678000190"])
+
+    assert "p.cnpj = ANY(%s)" in conn.query
+    assert conn.params == (["12345678000190"],)

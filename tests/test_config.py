@@ -61,4 +61,4 @@ def test_national_and_broad_contact_defaults(monkeypatch):
     assert settings.filter_include_secondary_cnae is True
     assert settings.filter_require_nome_fantasia is False
     assert settings.filter_require_telefone is False
-    assert settings.filter_max_candidates_per_run == 12000
+    assert settings.filter_max_candidates_per_run == 100000

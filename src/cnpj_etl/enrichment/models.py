@@ -12,6 +12,7 @@ ENRICHMENT_VERSION = os.getenv("ENRICHMENT_VERSION", "v2")
 ALLOWED_CANDIDATE_VIEWS = frozenset(
     {
         "cnpj.v_prospect_candidates",
+        "cnpj.v_marketing_enrichment_candidates",
         "cnpj.v_bi_varejo",
     }
 )
