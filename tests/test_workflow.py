@@ -29,9 +29,10 @@ def test_pipeline_separates_cheap_entry_and_final_quality_thresholds():
     assert "PROSPECT_MIN_PRE_SCORE=${{ inputs.min_lead_score || '70' }}" in text
     assert "INTELLIGENCE_ENTRY_MIN_SCORE=${{ inputs.min_lead_score || '70' }}" in text
     assert "PROSPECT_MIN_LEAD_SCORE=${{ inputs.min_lead_score || '70' }}" in text
-    assert "ENRICH_WORKERS=32" in text
+    assert "ENRICH_WORKERS=6" in text
     assert "ENRICH_BATCH_SIZE=${{ inputs.enrich_batch_size || '2000' }}" in text
     assert "INTELLIGENCE_WORKERS=12" in text
+    assert "python -m cnpj_etl.cli cleanup-storage" in text
 
 
 def test_pipeline_publishes_email_first_and_bounds_deep_enrichment():

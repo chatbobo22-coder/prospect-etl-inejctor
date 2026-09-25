@@ -86,7 +86,11 @@ def build_filter_context(settings, conn):
     excluded_cnpjs = frozenset(
         row[0]
         for row in conn.execute(
-            "SELECT cnpj FROM etl.candidate_decisions WHERE next_review_at > now()"
+            """
+            SELECT cnpj FROM etl.candidate_decisions WHERE next_review_at > now()
+            UNION
+            SELECT cnpj FROM etl.processed_candidates WHERE next_review_at > now()
+            """
         ).fetchall()
     )
     if settings.filter_min_population > 0:

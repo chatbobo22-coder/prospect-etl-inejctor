@@ -27,6 +27,7 @@ COMPACT_TABLES = (
     "intelligence.tironi_profiles",
     "intelligence.source_runs",
     "etl.candidate_decisions",
+    "etl.processed_candidates",
     "etl.enrichment_runs",
     "etl.files",
     "etl.runs",
@@ -66,6 +67,9 @@ def cleanup_storage(db) -> dict:
               AND id NOT IN (SELECT id FROM etl.runs ORDER BY id DESC LIMIT 20)
             """
         ).rowcount
+        expired_registry = conn.execute(
+            "DELETE FROM etl.processed_candidates WHERE next_review_at <= now()"
+        ).rowcount
         conn.commit()
 
     compacted = []
@@ -85,6 +89,7 @@ def cleanup_storage(db) -> dict:
         "old_enrichment_runs": max(0, old_enrichment),
         "old_source_runs": max(0, old_source_runs),
         "old_etl_runs": max(0, old_etl_runs),
+        "expired_registry": max(0, expired_registry),
         "compacted_tables": compacted,
     }
     log.info("[ARMAZENAMENTO] limpeza concluída: %s", stats)

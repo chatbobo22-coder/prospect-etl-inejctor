@@ -87,7 +87,8 @@ def test_materialized_raw_data_is_explicitly_discarded():
 
     assert "DELETE FROM cnpj.estabelecimentos" in source
     assert "FROM cnpj.prospectos_qualificados p WHERE p.cnpj=item.cnpj" in source
-    assert "WHERE p.cnpj_basico=item.cnpj_basico" in source
+    assert "INSERT INTO etl.processed_candidates" in source
+    assert "SELECT 1 FROM cnpj.estabelecimentos e WHERE e.cnpj_basico=item.cnpj_basico" in source
     assert "TRUNCATE cnpj.socios,cnpj.simples,cnpj.empresas,cnpj.estabelecimentos" in source
 
 

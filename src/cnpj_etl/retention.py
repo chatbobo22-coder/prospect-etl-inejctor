@@ -46,6 +46,22 @@ def prune_evaluated_candidates(conn) -> dict[str, int]:
         """
     )
 
+    # Guarda apenas a chave e o prazo de revisão. Sem isso, apagar as decisões
+    # detalhadas faria o próximo lote carregar os mesmos rejeitados novamente.
+    conn.execute(
+        """
+        INSERT INTO etl.processed_candidates
+          (cnpj,cnpj_basico,decision,next_review_at,updated_at)
+        SELECT cnpj,cnpj_basico,decision,
+          coalesce(next_review_at,now()+interval '180 days'),now()
+        FROM etl.candidate_decisions
+        ON CONFLICT (cnpj) DO UPDATE SET
+          decision=EXCLUDED.decision,
+          next_review_at=EXCLUDED.next_review_at,
+          updated_at=now()
+        """
+    )
+
     # Nunca mantenha rejeitados na tabela consumida pelo outreach.
     execute(
         "prospects_rejected",
@@ -75,6 +91,19 @@ def prune_evaluated_candidates(conn) -> dict[str, int]:
             DELETE FROM {table} item
             USING etl.candidate_decisions d
             WHERE item.cnpj=d.cnpj AND d.decision='rejected'
+            """,
+        )
+
+        execute(
+            f"{name}_orphaned",
+            f"""
+            DELETE FROM {table} item
+            WHERE NOT EXISTS (
+              SELECT 1 FROM cnpj.prospectos_qualificados p WHERE p.cnpj=item.cnpj
+            )
+              AND NOT EXISTS (
+                SELECT 1 FROM cnpj.estabelecimentos e WHERE e.cnpj=item.cnpj
+              )
             """,
         )
 
@@ -120,15 +149,6 @@ def prune_evaluated_candidates(conn) -> dict[str, int]:
             DELETE FROM {table} item
             WHERE NOT EXISTS (
               SELECT 1 FROM cnpj.estabelecimentos e WHERE e.cnpj_basico=item.cnpj_basico
-            )
-            AND (
-              EXISTS (
-                SELECT 1 FROM etl.candidate_decisions d
-                WHERE d.cnpj_basico=item.cnpj_basico
-              ) OR EXISTS (
-                SELECT 1 FROM cnpj.prospectos_qualificados p
-                WHERE p.cnpj_basico=item.cnpj_basico
-              )
             )
             """,
         )

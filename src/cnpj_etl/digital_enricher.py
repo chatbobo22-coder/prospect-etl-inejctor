@@ -65,7 +65,22 @@ def _enrich_chunk(dsn: str, rows: list[dict], settings: EnrichSettings, output: 
     """Executa I/O em paralelo usando uma conexão isolada por worker."""
     processed = 0
     try:
-        with psycopg.connect(dsn, connect_timeout=30) as worker_conn:
+        worker_conn = None
+        last_connection_error = None
+        for attempt in range(1, 4):
+            try:
+                worker_conn = psycopg.connect(dsn, connect_timeout=30)
+                break
+            except psycopg.OperationalError as exc:
+                last_connection_error = exc
+                log.warning(
+                    "Worker sem conexão ao banco (tentativa %s/3); aguardando novo slot",
+                    attempt,
+                )
+                time.sleep(attempt * 2)
+        if worker_conn is None:
+            raise last_connection_error or RuntimeError("Conexão do worker indisponível")
+        with worker_conn:
             for processed, row in enumerate(rows, start=1):
                 try:
                     output.put((row, enrich_record(row, worker_conn, settings), None))
