@@ -16,7 +16,12 @@ from .digital_enricher import (
 from .ibge_population import ensure_municipios_populacao
 from .intelligence import IntelligenceSettings, run_intelligence, run_intelligence_until_empty
 from .intent.service import rebuild_profiles
-from .marketing import MarketingSettings, publish_marketing_ready
+from .marketing import (
+    MarketingSettings,
+    normalize_fast_scores,
+    publish_marketing_ready,
+    upgrade_enriched_fast_leads,
+)
 from .outreach_sync import sync_qualified_leads
 from .pipeline import run
 from .prospect import (
@@ -50,15 +55,18 @@ def run_fast_lead_cycle(conn, remote, rows: int) -> None:
         conn, min_pre_score=int(os.getenv("PROSPECT_MIN_LEAD_SCORE", "70"))
     )
     prefilter_retention = prune_evaluated_candidates(conn)
+    recalibrated = normalize_fast_scores(conn)
+    sync_qualified_leads(conn, commit=False, cnpjs=recalibrated["cnpjs"])
     publish_stats = publish_marketing_ready(
         conn, replace(MarketingSettings(), batch_size=batch_size)
     )
     retention_after = prune_evaluated_candidates(conn)
     logging.info(
         "[FAST-LEAD] lote publicado antes do enriquecimento profundo: "
-        "prefilter=%s prefilter_retention=%s publish=%s retention=%s",
+        "prefilter=%s prefilter_retention=%s recalibrated=%s publish=%s retention=%s",
         prefilter_stats,
         prefilter_retention,
+        {key: value for key, value in recalibrated.items() if key != "cnpjs"},
         publish_stats,
         retention_after,
     )
@@ -120,6 +128,10 @@ def main():
     sub.add_parser(
         "publish-ready",
         help="Qualifica candidatos prontos e publica A/B no Outreach",
+    )
+    sub.add_parser(
+        "refresh-quality",
+        help="Recalibra scores e promove A/B já enriquecidos sem executar o ETL",
     )
     sub.add_parser(
         "cleanup-storage",
@@ -233,33 +245,52 @@ def main():
         with db.connect() as conn:
             stats = publish_marketing_ready(conn)
         logging.info("Publicação rápida concluída: %s", stats)
+    elif args.command == "refresh-quality":
+        db.migrate(sql_dir)
+        with db.connect() as conn:
+            recalibrated = normalize_fast_scores(conn)
+            upgraded = upgrade_enriched_fast_leads(conn)
+            changed = list(dict.fromkeys(recalibrated["cnpjs"] + upgraded["cnpjs"]))
+            synced = sync_qualified_leads(conn, cnpjs=changed)
+        logging.info(
+            "Qualidade atualizada: recalibrated=%s upgraded=%s outreach=%s",
+            {key: value for key, value in recalibrated.items() if key != "cnpjs"},
+            {key: value for key, value in upgraded.items() if key != "cnpjs"},
+            synced,
+        )
     elif args.command == "cleanup-storage":
         db.migrate(sql_dir)
         stats = cleanup_storage(db)
         logging.info("Limpeza de armazenamento concluída: %s", stats)
     elif args.command == "prospect-pipeline":
         db.migrate(sql_dir)
-        batch_size = args.batch_size or int(os.getenv("ENRICH_BATCH_SIZE", "250"))
+        batch_size = args.batch_size or int(os.getenv("ENRICH_BATCH_SIZE", "2000"))
         settings_obj = EnrichSettings(batch_size=batch_size)
         with db.connect() as conn:
             min_score = int(os.getenv("PROSPECT_MIN_LEAD_SCORE", "70"))
             prefilter_stats = reject_before_enrichment(conn, min_pre_score=min_score)
             prefilter_retention = prune_evaluated_candidates(conn)
+            recalibrated = normalize_fast_scores(conn)
             publish_stats = publish_marketing_ready(conn)
-            # Crawling é aprofundamento, não porta de entrada. Uma rodada
-            # pequena mantém o perfil evoluindo sem bloquear o próximo lote.
+            # Uma rodada limitada aprofunda os melhores B sem bloquear o lote
+            # seguinte; o resultado promove A ou descarta score digital < 70.
             enrich_stats = run_enrichment(
                 conn, settings_obj, force=args.force_enrich
             )
-            synced = sync_qualified_leads(conn)
+            upgraded = upgrade_enriched_fast_leads(conn)
+            changed = list(dict.fromkeys(recalibrated["cnpjs"] + upgraded["cnpjs"]))
+            synced = sync_qualified_leads(conn, cnpjs=changed)
             retention_stats = prune_evaluated_candidates(conn)
         logging.info(
             "Pipeline prospect rápido: prefilter=%s retention_before=%s "
-            "publish=%s deep_enrich_bounded=%s outreach=%s retention_after=%s",
+            "recalibrated=%s publish=%s deep_enrich_bounded=%s "
+            "quality_upgrade=%s outreach=%s retention_after=%s",
             prefilter_stats,
             prefilter_retention,
+            {key: value for key, value in recalibrated.items() if key != "cnpjs"},
             publish_stats,
             enrich_stats,
+            {key: value for key, value in upgraded.items() if key != "cnpjs"},
             synced,
             retention_stats,
         )

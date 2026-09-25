@@ -173,7 +173,12 @@ def calculate_confidence_score(result: EnrichResult) -> int:
 
 def calculate_lead_score(result: EnrichResult) -> tuple[int, str]:
     lead = round(
-        result.fit_score * 0.40 + result.pain_score * 0.35 + result.confidence_score * 0.25
+        35
+        + result.presence_score * 0.25
+        + result.commerce_score * 0.20
+        + result.fit_score * 0.20
+        + result.pain_score * 0.15
+        + result.confidence_score * 0.20
     )
     lead = _clamp(lead)
     if lead >= 80:

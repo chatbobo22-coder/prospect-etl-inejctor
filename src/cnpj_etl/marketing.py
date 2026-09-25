@@ -29,17 +29,19 @@ FREE_DOMAINS = (
 )
 
 PRE_SCORE_SQL = """
-LEAST(100,
-  20
-  + CASE WHEN lower(split_part(v.email,'@',2)) = ANY(%s) THEN 10 ELSE 20 END
-  + CASE WHEN NULLIF(btrim(v.telefone_1),'') IS NOT NULL THEN 15 ELSE 0 END
-  + CASE WHEN NULLIF(btrim(v.nome_fantasia),'') IS NOT NULL THEN 10 ELSE 0 END
-  + CASE btrim(COALESCE(v.porte,'')) WHEN '05' THEN 20 WHEN '03' THEN 15
-      WHEN '01' THEN 5 ELSE 0 END
-  + CASE WHEN COALESCE(v.capital_social,0) >= 1000000 THEN 15
+LEAST(95,
+  25
+  + CASE WHEN lower(split_part(v.email,'@',2)) = ANY(%s) THEN 5 ELSE 15 END
+  + CASE WHEN NULLIF(btrim(v.telefone_1),'') IS NOT NULL THEN 10 ELSE 0 END
+  + CASE WHEN NULLIF(btrim(v.nome_fantasia),'') IS NOT NULL THEN 5 ELSE 0 END
+  + CASE btrim(COALESCE(v.porte,'')) WHEN '05' THEN 10 WHEN '03' THEN 8
+      WHEN '01' THEN 3 ELSE 0 END
+  + CASE WHEN COALESCE(v.capital_social,0) >= 10000000 THEN 20
+      WHEN COALESCE(v.capital_social,0) >= 1000000 THEN 15
       WHEN COALESCE(v.capital_social,0) >= 100000 THEN 10
       WHEN COALESCE(v.capital_social,0) >= 10000 THEN 5 ELSE 0 END
   + CASE WHEN NULLIF(btrim(v.cnae_fiscal_principal),'') IS NOT NULL THEN 5 ELSE 0 END
+  + CASE WHEN v.opcao_simples='S' THEN 5 ELSE 0 END
 )
 """
 
@@ -207,7 +209,8 @@ def _persist(conn) -> dict[str, int]:
           email,CASE WHEN deliverability_status='valid' THEN 80 ELSE 70 END,email_role,
           'marketing-fast-v1',
           jsonb_build_object('fast_path',true,'email_status',deliverability_status,
-            'email_risk_score',risk_score,'deep_enrichment_pending',true),
+            'email_risk_score',risk_score,'deep_enrichment_pending',true,
+            'score_kind','preliminary','source_competence',source_competence),
           now(),now(),now()
         FROM tmp_marketing_ready
         WHERE deliverability_status IN ('valid','risky')
@@ -221,6 +224,164 @@ def _persist(conn) -> dict[str, int]:
         """
     ).rowcount
     return {"decisions": max(0, decisions), "qualified": max(0, qualified)}
+
+
+def normalize_fast_scores(conn, *, limit: int = 10_000) -> dict:
+    """Recalibra aos poucos o pre-score antigo que saturava em 100."""
+    conn.execute("SELECT pg_advisory_xact_lock(%s)", (7_262_603_883,))
+    conn.execute("DROP TABLE IF EXISTS tmp_fast_reclassified")
+    conn.execute(
+        """
+        CREATE TEMP TABLE tmp_fast_reclassified ON COMMIT DROP AS
+        SELECT p.cnpj,
+          LEAST(95,
+            25
+            + CASE WHEN lower(split_part(p.email,'@',2)) = ANY(%s) THEN 5 ELSE 15 END
+            + CASE WHEN NULLIF(btrim(p.telefone_1),'') IS NOT NULL THEN 10 ELSE 0 END
+            + CASE WHEN NULLIF(btrim(p.nome_fantasia),'') IS NOT NULL THEN 5 ELSE 0 END
+            + CASE WHEN COALESCE(p.capital_social,0) >= 10000000 THEN 20
+                WHEN COALESCE(p.capital_social,0) >= 1000000 THEN 15
+                WHEN COALESCE(p.capital_social,0) >= 100000 THEN 10
+                WHEN COALESCE(p.capital_social,0) >= 10000 THEN 5 ELSE 0 END
+            + CASE WHEN p.opcao_simples='S' THEN 5 ELSE 0 END
+          )::smallint AS new_score
+        FROM cnpj.prospectos_qualificados p
+        WHERE p.qualification_status='qualified'
+          AND p.qualification_version='marketing-fast-v1'
+          AND NOT COALESCE((p.sinais->>'score_recalibrated')::boolean,false)
+        ORDER BY p.cnpj
+        LIMIT %s
+        """,
+        (list(FREE_DOMAINS), max(1, limit)),
+    )
+    rows = conn.execute(
+        """
+        UPDATE cnpj.prospectos_qualificados p
+        SET lead_score=t.new_score,digital_score=t.new_score,fit_score=t.new_score,
+          sinais=COALESCE(p.sinais,'{}'::jsonb) || jsonb_build_object(
+            'score_recalibrated',true,'score_kind','preliminary'),
+          updated_at=now()
+        FROM tmp_fast_reclassified t
+        WHERE p.cnpj=t.cnpj
+        RETURNING p.cnpj,t.new_score
+        """
+    ).fetchall()
+    conn.execute(
+        """
+        UPDATE etl.candidate_decisions d
+        SET decision=CASE WHEN t.new_score>=70 THEN 'qualified_b' ELSE 'rejected' END,
+          lead_score=t.new_score,
+          razao_social=CASE WHEN t.new_score<70 THEN p.razao_social END,
+          nome_fantasia=CASE WHEN t.new_score<70 THEN p.nome_fantasia END,
+          telefone=CASE WHEN t.new_score<70 THEN p.telefone_1 END,
+          email=CASE WHEN t.new_score<70 THEN p.email END,
+          reason_codes=CASE WHEN t.new_score<70
+            THEN ARRAY['pre_score_recalibrado_abaixo_70'] ELSE d.reason_codes END,
+          evaluated_at=now(),updated_at=now()
+        FROM tmp_fast_reclassified t
+        JOIN cnpj.prospectos_qualificados p ON p.cnpj=t.cnpj
+        WHERE d.cnpj=t.cnpj
+        """
+    )
+    rejected = conn.execute(
+        """
+        DELETE FROM outreach.leads lead
+        USING tmp_fast_reclassified t
+        WHERE lead.cnpj=t.cnpj AND t.new_score<70
+        """
+    ).rowcount
+    conn.execute(
+        """
+        DELETE FROM cnpj.prospectos_qualificados p
+        USING tmp_fast_reclassified t
+        WHERE p.cnpj=t.cnpj AND t.new_score<70
+        """
+    )
+    kept = [cnpj for cnpj, score in rows if score >= 70]
+    return {
+        "processed": len(rows),
+        "kept": len(kept),
+        "rejected": max(0, rejected),
+        "cnpjs": kept,
+    }
+
+
+def upgrade_enriched_fast_leads(conn) -> dict:
+    """Converte B provisório em A somente após confirmar sinal digital forte."""
+    rows = conn.execute(
+        """
+        UPDATE cnpj.prospectos_qualificados p
+        SET site_url=COALESCE(d.site_final_url,d.site_url),site_ativo=d.site_ativo,
+          plataforma=d.plataforma,whatsapp_url=CASE WHEN d.whatsapp_valid THEN d.whatsapp_url END,
+          instagram_url=d.instagram_url,linkedin_url=d.linkedin_url,
+          digital_score=COALESCE(d.digital_score,d.lead_score,p.digital_score),
+          digital_maturity=COALESCE(d.commerce_maturity,d.digital_maturity),
+          presence_score=d.presence_score,commerce_score=d.commerce_score,
+          fit_score=d.fit_score,pain_score=d.pain_score,
+          confidence_score=GREATEST(p.confidence_score,COALESCE(d.confidence_score,0)),
+          lead_score=COALESCE(d.lead_score,p.lead_score),
+          lead_quality=CASE
+            WHEN ev.deliverability_status='valid'
+              AND COALESCE(d.lead_score,d.digital_score,0)>=70
+              AND COALESCE(d.confidence_score,0)>=70
+              AND (d.site_valid OR d.whatsapp_valid
+                   OR d.google_business_status='OPERATIONAL')
+            THEN 'A' ELSE 'B' END,
+          qualification_reasons=CASE
+            WHEN ev.deliverability_status='valid'
+              AND COALESCE(d.lead_score,d.digital_score,0)>=70
+              AND COALESCE(d.confidence_score,0)>=70
+              AND (d.site_valid OR d.whatsapp_valid
+                   OR d.google_business_status='OPERATIONAL')
+            THEN ARRAY['email_validado','sinal_digital_forte','qualidade_a']
+            ELSE ARRAY['email_validado','enriquecimento_digital','qualidade_b'] END,
+          qualification_version='marketing-digital-v2',
+          sinais=COALESCE(p.sinais,'{}'::jsonb) || COALESCE(d.sinais,'{}'::jsonb)
+            || jsonb_build_object('deep_enrichment_pending',false,'score_kind','digital'),
+          last_qualified_at=now(),updated_at=now()
+        FROM cnpj.digital_presenca d
+        LEFT JOIN intelligence.email_verifications ev ON ev.cnpj=d.cnpj
+        WHERE p.cnpj=d.cnpj
+          AND p.qualification_status='qualified'
+          AND p.qualification_version LIKE 'marketing-fast-%'
+          AND d.enrich_status IN ('done','partial','no_site','failed')
+        RETURNING p.cnpj,p.lead_quality,p.lead_score
+        """
+    ).fetchall()
+    if rows:
+        conn.execute(
+            """
+            UPDATE etl.candidate_decisions decision
+            SET decision=CASE WHEN p.lead_score<70 THEN 'rejected'
+                WHEN p.lead_quality='A' THEN 'qualified_a' ELSE 'qualified_b' END,
+              lead_score=p.lead_score,
+              razao_social=CASE WHEN p.lead_score<70 THEN p.razao_social END,
+              nome_fantasia=CASE WHEN p.lead_score<70 THEN p.nome_fantasia END,
+              telefone=CASE WHEN p.lead_score<70 THEN p.telefone_1 END,
+              email=CASE WHEN p.lead_score<70 THEN p.email END,
+              reason_codes=CASE WHEN p.lead_score<70
+                THEN ARRAY['score_digital_abaixo_70'] ELSE decision.reason_codes END,
+              evaluated_at=now(),updated_at=now()
+            FROM cnpj.prospectos_qualificados p
+            WHERE decision.cnpj=p.cnpj AND p.cnpj=ANY(%s)
+            """,
+            ([cnpj for cnpj, _, _ in rows],),
+        )
+        low_score = [cnpj for cnpj, _, score in rows if score < 70]
+        if low_score:
+            conn.execute("DELETE FROM outreach.leads WHERE cnpj=ANY(%s)", (low_score,))
+            conn.execute(
+                "DELETE FROM cnpj.prospectos_qualificados WHERE cnpj=ANY(%s)",
+                (low_score,),
+            )
+    kept = [cnpj for cnpj, _, score in rows if score >= 70]
+    return {
+        "processed": len(rows),
+        "quality_a": sum(1 for _, quality, score in rows if quality == "A" and score >= 70),
+        "quality_b": sum(1 for _, quality, score in rows if quality == "B" and score >= 70),
+        "rejected": sum(1 for _, _, score in rows if score < 70),
+        "cnpjs": kept,
+    }
 
 
 def publish_marketing_ready(

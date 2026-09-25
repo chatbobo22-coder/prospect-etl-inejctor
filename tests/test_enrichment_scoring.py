@@ -69,10 +69,16 @@ def test_strong_observed_fit_can_reach_70_without_fixed_cnae_list(monkeypatch):
 
 def test_lead_score_weights():
     result = EnrichResult(
-        cnpj="1", cnpj_basico="1", fit_score=80, pain_score=60, confidence_score=40
+        cnpj="1",
+        cnpj_basico="1",
+        presence_score=70,
+        commerce_score=50,
+        fit_score=80,
+        pain_score=60,
+        confidence_score=40,
     )
     lead, _ = calculate_lead_score(result)
-    assert lead == round(80 * 0.40 + 60 * 0.35 + 40 * 0.25)
+    assert lead == round(35 + 70 * 0.25 + 50 * 0.20 + 80 * 0.20 + 60 * 0.15 + 40 * 0.20)
 
 
 def test_low_confidence_score():

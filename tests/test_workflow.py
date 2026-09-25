@@ -2,6 +2,7 @@ from pathlib import Path
 
 
 WORKFLOW = Path(".github/workflows/prospect-pipeline.yml")
+PUBLISH_WORKFLOW = Path(".github/workflows/publish-qualified.yml")
 
 
 def test_pipeline_chains_only_after_full_batch_processing():
@@ -25,7 +26,8 @@ def test_pipeline_separates_cheap_entry_and_final_quality_thresholds():
     assert "PROSPECT_MIN_PRE_SCORE=${{ inputs.min_lead_score || '70' }}" in text
     assert "INTELLIGENCE_ENTRY_MIN_SCORE=${{ inputs.min_lead_score || '70' }}" in text
     assert "PROSPECT_MIN_LEAD_SCORE=${{ inputs.min_lead_score || '70' }}" in text
-    assert "ENRICH_WORKERS=24" in text
+    assert "ENRICH_WORKERS=32" in text
+    assert "ENRICH_BATCH_SIZE=${{ inputs.enrich_batch_size || '2000' }}" in text
     assert "INTELLIGENCE_WORKERS=12" in text
 
 
@@ -36,3 +38,9 @@ def test_pipeline_publishes_email_first_and_bounds_deep_enrichment():
     assert "MARKETING_EMAIL_WORKERS=64" in text
     assert "ENRICH_CANDIDATE_VIEW=cnpj.v_marketing_enrichment_candidates" in text
     assert "ENRICH_MAX_ROUNDS=1" in text
+
+
+def test_manual_publish_recalibrates_and_promotes_before_sync():
+    text = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "python -m cnpj_etl.cli refresh-quality" in text

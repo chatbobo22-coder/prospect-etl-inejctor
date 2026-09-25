@@ -122,6 +122,16 @@ def test_fast_lead_cycle_publishes_after_company_file(monkeypatch):
     )
     monkeypatch.setattr(
         cli,
+        "normalize_fast_scores",
+        lambda *_a, **_k: calls.append("normalize") or {"cnpjs": []},
+    )
+    monkeypatch.setattr(
+        cli,
+        "sync_qualified_leads",
+        lambda *_a, **_k: calls.append("sync") or 0,
+    )
+    monkeypatch.setattr(
+        cli,
         "prune_evaluated_candidates",
         lambda *_a, **_k: calls.append("prune") or {},
     )
@@ -132,6 +142,8 @@ def test_fast_lead_cycle_publishes_after_company_file(monkeypatch):
     assert calls == [
         "prefilter",
         "prune",
+        "normalize",
+        "sync",
         "publish",
         "prune",
     ]

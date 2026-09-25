@@ -45,7 +45,7 @@ class InjectorConfig(BaseModel):
     force_etl: bool = True
     continuous: bool = True
     force_enrich: bool = False
-    enrich_batch_size: int = Field(default=500, ge=1, le=5000)
+    enrich_batch_size: int = Field(default=2000, ge=1, le=5000)
     intelligence_sources: str = (
         "receita,email_quality,website,rdap,cvm,gdelt,pncp,inpi,google_places,pagespeed,"
         "meta_ads,google_ads,people_provider"
@@ -725,7 +725,7 @@ def injector_config():
             "force_etl": True,
             "continuous": True,
             "force_enrich": False,
-            "enrich_batch_size": int(os.getenv("ENRICH_BATCH_SIZE", "500")),
+            "enrich_batch_size": int(os.getenv("ENRICH_BATCH_SIZE", "2000")),
             "intelligence_sources": os.getenv(
                 "INTELLIGENCE_SOURCES",
                 "receita,email_quality,website,rdap,cvm,gdelt,pncp,inpi,google_places,pagespeed,meta_ads,google_ads,people_provider",

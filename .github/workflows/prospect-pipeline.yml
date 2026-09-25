@@ -100,7 +100,7 @@ on:
         description: "Leads já publicados aprofundados por ciclo"
         required: false
         type: string
-        default: "250"
+        default: "2000"
       intelligence_sources:
         description: "Fontes de inteligência separadas por vírgula"
         required: false
@@ -173,8 +173,8 @@ jobs:
           echo "FILTER_CNAE_INCLUDE_SECONDARY=${{ github.event_name == 'schedule' || inputs.include_secondary_cnae == true }}" >> "$GITHUB_ENV"
           echo "IBGE_POPULATION_YEAR=2024" >> "$GITHUB_ENV"
           echo "ENRICH_CANDIDATE_VIEW=cnpj.v_marketing_enrichment_candidates" >> "$GITHUB_ENV"
-          echo "ENRICH_BATCH_SIZE=${{ inputs.enrich_batch_size || '250' }}" >> "$GITHUB_ENV"
-          echo "ENRICH_WORKERS=24" >> "$GITHUB_ENV"
+          echo "ENRICH_BATCH_SIZE=${{ inputs.enrich_batch_size || '2000' }}" >> "$GITHUB_ENV"
+          echo "ENRICH_WORKERS=32" >> "$GITHUB_ENV"
           echo "ENRICH_MAX_ROUNDS=1" >> "$GITHUB_ENV"
           echo "ENRICH_BRASILAPI=false" >> "$GITHUB_ENV"
           echo "ENRICH_DELAY_SECONDS=0.05" >> "$GITHUB_ENV"
@@ -356,6 +356,6 @@ jobs:
             -f force_etl=true \
             -f continuous=true \
             -f force_enrich=false \
-            -f enrich_batch_size="${{ inputs.enrich_batch_size || '250' }}" \
+            -f enrich_batch_size="${{ inputs.enrich_batch_size || '2000' }}" \
             -f intelligence_sources="${{ inputs.intelligence_sources || 'receita,email_quality,website,rdap,cvm,gdelt' }}" \
             -f intelligence_batch_size="${{ inputs.intelligence_batch_size || '250' }}"
