@@ -34,6 +34,19 @@ class FakeConnection:
         self.committed = True
 
 
+class StagedConnection(FakeConnection):
+    def __init__(self, staged_rows, company_rows):
+        super().__init__()
+        self.staged_rows = staged_rows
+        self.company_rows = company_rows
+
+    def execute(self, query, params=None):
+        self.calls.append((query, params))
+        if "FROM cnpj.empresas" in query:
+            return RowsResult(self.company_rows)
+        return RowsResult(self.staged_rows)
+
+
 def _settings(**overrides):
     values = {
         "filter_cnaes": frozenset(),
@@ -63,8 +76,9 @@ def test_storage_cap_limits_raw_candidate_peak():
 
 def test_existing_raw_backlog_is_selected_before_new_downloads():
     context = build_filter_context(_settings(), FakeConnection())
-    connection = FakeConnection(
-        [("12345678000190", "12345678"), ("87654321000109", "87654321")]
+    connection = StagedConnection(
+        [("12345678000190", "12345678"), ("87654321000109", "87654321")],
+        [("12345678",)],
     )
 
     selected = seed_staged_candidates(connection, context)
@@ -72,9 +86,11 @@ def test_existing_raw_backlog_is_selected_before_new_downloads():
     assert selected == 2
     assert context.selected_cnpjs == {"12345678000190", "87654321000109"}
     assert context.matched_basics == {"12345678", "87654321"}
+    assert context.resolved_company_basics == {"12345678"}
     assert connection.calls[0][1] == (25_000,)
     assert "prospectos_qualificados" in connection.calls[0][0]
     assert "candidate_decisions" in connection.calls[0][0]
+    assert connection.calls[1][1] == (["12345678", "87654321"],)
 
 
 def test_materialized_raw_data_is_explicitly_discarded():

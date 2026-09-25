@@ -174,10 +174,24 @@ def seed_staged_candidates(conn, filter_ctx: FilterContext | None) -> int:
         filter_ctx.selected_cnpjs.add(cnpj)
         filter_ctx.matched_basics.add(cnpj_basico)
     if rows:
+        # Execuções interrompidas podem ter carregado a razão social antes de
+        # manter o estabelecimento no staging. Reconheça esse cadastro agora
+        # para não reler dezenas de milhões de linhas dos ZIPs Empresas.
+        existing_companies = conn.execute(
+            """
+            SELECT cnpj_basico
+            FROM cnpj.empresas
+            WHERE cnpj_basico=ANY(%s)
+            """,
+            (sorted(filter_ctx.matched_basics),),
+        ).fetchall()
+        filter_ctx.resolved_company_basics.update(row[0] for row in existing_companies)
         log.info(
             "[ARMAZENAMENTO] retomando %s candidatos brutos já armazenados; "
-            "nenhum novo estabelecimento será carregado antes de consumi-los",
+            "%s já possuem razão social; nenhum novo estabelecimento será "
+            "carregado antes de consumi-los",
             len(rows),
+            len(filter_ctx.resolved_company_basics),
         )
     return len(rows)
 
@@ -275,6 +289,11 @@ def run(
         try:
             for index, remote in enumerate(files, start=1):
                 if remote.file_type == "Empresas" and all_company_basics_resolved(filter_ctx):
+                    if after_file and staged_backlog:
+                        # Todos os dados necessários já estavam no banco. Rode o
+                        # funil agora, sem esperar ou baixar um ZIP de Empresas.
+                        after_file(lock_conn, remote, staged_backlog)
+                        staged_backlog = 0
                     log.info(
                         "[FAST-LOAD] Todas as %s razões sociais foram encontradas; "
                         "ignorando %s e os próximos ZIPs de Empresas",
@@ -520,6 +539,8 @@ def run(
                 if after_file:
                     try:
                         after_file(lock_conn, remote, rows_loaded)
+                        if remote.file_type == "Empresas" and rows_loaded > 0:
+                            staged_backlog = 0
                     except Exception:
                         lock_conn.rollback()
                         log.exception(
