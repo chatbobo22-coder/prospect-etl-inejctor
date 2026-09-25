@@ -422,6 +422,8 @@ def run(
                 )
                 lock_conn.commit()
 
+                incremental_published = 0
+
                 def ingest(path, sha256, size):
                     log.info(
                         "Processando %s (%s baixados, sha256=%s…)",
@@ -438,6 +440,7 @@ def run(
                     lock_conn.commit()
 
                     def report_load_progress(scanned: int, matched: int, skipped: int) -> None:
+                        nonlocal incremental_published, staged_backlog
                         lock_conn.execute(
                             "UPDATE etl.files SET rows_processed=%s,scanned_rows=%s,"
                             "skipped_rows=%s,activity_at=now() "
@@ -455,6 +458,23 @@ def run(
                             (total + matched, run_id),
                         )
                         lock_conn.commit()
+                        if (
+                            after_file
+                            and remote.file_type == "Empresas"
+                            and matched > incremental_published
+                        ):
+                            new_matches = matched - incremental_published
+                            try:
+                                after_file(lock_conn, remote, new_matches)
+                                incremental_published = matched
+                                staged_backlog = 0
+                            except Exception:
+                                lock_conn.rollback()
+                                log.exception(
+                                    "[FAST-LEAD] Funil incremental falhou durante %s; "
+                                    "a leitura do arquivo continuará",
+                                    remote.name,
+                                )
 
                     return load_zip(
                         lock_conn,
@@ -538,7 +558,8 @@ def run(
                 )
                 if after_file:
                     try:
-                        after_file(lock_conn, remote, rows_loaded)
+                        remaining_rows = max(0, rows_loaded - incremental_published)
+                        after_file(lock_conn, remote, remaining_rows)
                         if remote.file_type == "Empresas" and rows_loaded > 0:
                             staged_backlog = 0
                     except Exception:

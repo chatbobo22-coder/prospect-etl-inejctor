@@ -108,6 +108,20 @@ def test_materialized_raw_data_is_explicitly_discarded():
     assert "TRUNCATE cnpj.socios,cnpj.simples,cnpj.empresas,cnpj.estabelecimentos" in source
 
 
+def test_company_matches_are_published_during_large_file_progress():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "cnpj_etl"
+        / "pipeline.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'remote.file_type == "Empresas"' in source
+    assert "matched > incremental_published" in source
+    assert "new_matches = matched - incremental_published" in source
+    assert "rows_loaded - incremental_published" in source
+
+
 def test_unresolved_raw_staging_is_discarded_after_company_scan():
     context = build_filter_context(_settings(), FakeConnection())
     context.matched_basics.update({"12345678", "87654321"})
