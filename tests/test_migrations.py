@@ -105,7 +105,11 @@ def test_rejected_details_are_not_stored_and_old_columns_are_removed():
 
 def test_compact_enrichment_view_can_replace_wider_legacy_view():
     sql_dir = Path(__file__).resolve().parents[1] / "sql"
+    wide = (sql_dir / "022_marketing_fast_path.sql").read_text(encoding="utf-8")
     text = (sql_dir / "024_pause_and_compact.sql").read_text(encoding="utf-8")
+    assert "DROP VIEW IF EXISTS cnpj.v_marketing_enrichment_candidates;" in wide
+    assert "CREATE VIEW cnpj.v_marketing_enrichment_candidates AS" in wide
+    assert "CREATE OR REPLACE VIEW cnpj.v_marketing_enrichment_candidates" not in wide
     assert "DROP VIEW IF EXISTS cnpj.v_marketing_enrichment_candidates;" in text
     assert "CREATE VIEW cnpj.v_marketing_enrichment_candidates AS" in text
     assert "CREATE OR REPLACE VIEW cnpj.v_marketing_enrichment_candidates" not in text

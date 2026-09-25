@@ -1,6 +1,9 @@
 -- O crawling profundo opera somente sobre leads que já passaram pelo caminho
 -- barato de score local + MX. Assim ele nunca bloqueia a publicação no Outreach.
-CREATE OR REPLACE VIEW cnpj.v_marketing_enrichment_candidates AS
+-- A migration 024 compacta esta view. Como todas as migrations são reaplicadas,
+-- remova a versão compacta antes de restaurar a versão larga desta etapa.
+DROP VIEW IF EXISTS cnpj.v_marketing_enrichment_candidates;
+CREATE VIEW cnpj.v_marketing_enrichment_candidates AS
 SELECT v.*
 FROM cnpj.v_prospect_candidates v
 JOIN etl.candidate_decisions d ON d.cnpj=v.cnpj

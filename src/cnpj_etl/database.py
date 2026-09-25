@@ -54,6 +54,7 @@ class Database:
             except RETRYABLE_TRANSACTION_ERRORS as exc:
                 conn.rollback()
                 if attempt == MIGRATION_MAX_ATTEMPTS:
+                    log.exception("Falha definitiva na migration %s.", path.name)
                     raise
                 delay = MIGRATION_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
                 log.warning(
@@ -66,6 +67,10 @@ class Database:
                     delay,
                 )
                 time.sleep(delay)
+            except psycopg.Error:
+                conn.rollback()
+                log.exception("Falha na migration %s.", path.name)
+                raise
 
     def reset_load(self, conn):
         conn.execute(
