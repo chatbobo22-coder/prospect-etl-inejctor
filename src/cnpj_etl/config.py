@@ -113,6 +113,7 @@ class Settings:
     filter_min_population: int = field(default_factory=_parse_min_population)
     filter_headquarters_only: bool = _env_flag("FILTER_HEADQUARTERS_ONLY", "true")
     filter_max_candidates_per_run: int = int(os.getenv("FILTER_MAX_CANDIDATES_PER_RUN", "100000"))
+    raw_staging_max_rows: int = int(os.getenv("RAW_STAGING_MAX_ROWS", "25000"))
     ibge_population_year: int = int(os.getenv("IBGE_POPULATION_YEAR", "2024"))
     filter_ufs: frozenset[str] = field(default_factory=_parse_filter_ufs)
 

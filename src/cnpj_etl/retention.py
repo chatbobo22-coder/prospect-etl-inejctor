@@ -102,8 +102,11 @@ def prune_evaluated_candidates(conn) -> dict[str, int]:
         "raw_establishments",
         """
         DELETE FROM cnpj.estabelecimentos item
-        USING etl.candidate_decisions d
-        WHERE item.cnpj=d.cnpj
+        WHERE EXISTS (
+          SELECT 1 FROM etl.candidate_decisions d WHERE d.cnpj=item.cnpj
+        ) OR EXISTS (
+          SELECT 1 FROM cnpj.prospectos_qualificados p WHERE p.cnpj=item.cnpj
+        )
         """,
     )
     for name, table in (
@@ -118,13 +121,30 @@ def prune_evaluated_candidates(conn) -> dict[str, int]:
             WHERE NOT EXISTS (
               SELECT 1 FROM cnpj.estabelecimentos e WHERE e.cnpj_basico=item.cnpj_basico
             )
-            AND EXISTS (
-              SELECT 1 FROM etl.candidate_decisions d WHERE d.cnpj_basico=item.cnpj_basico
+            AND (
+              EXISTS (
+                SELECT 1 FROM etl.candidate_decisions d
+                WHERE d.cnpj_basico=item.cnpj_basico
+              ) OR EXISTS (
+                SELECT 1 FROM cnpj.prospectos_qualificados p
+                WHERE p.cnpj_basico=item.cnpj_basico
+              )
             )
             """,
         )
 
     execute("decisions_compacted", "DELETE FROM etl.candidate_decisions")
+
+    raw_remaining = conn.execute(
+        "SELECT count(*) FROM cnpj.estabelecimentos"
+    ).fetchone()[0]
+    if not raw_remaining:
+        # TRUNCATE devolve imediatamente as páginas das tabelas de staging;
+        # DELETE/VACUUM comum apenas as deixaria reservadas para reúso.
+        conn.execute(
+            "TRUNCATE cnpj.socios,cnpj.simples,cnpj.empresas,cnpj.estabelecimentos"
+        )
+        stats["raw_tables_truncated"] = 1
 
     conn.commit()
     log.info("Retenção do funil aplicada: %s", stats)

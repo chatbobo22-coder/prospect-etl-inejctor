@@ -6,6 +6,7 @@ from collections.abc import Callable
 from .filters import FILE_LOAD_ORDER, FilterContext, all_company_basics_resolved
 from .ibge_population import ensure_municipios_populacao, load_allowed_municipios
 from .loader import load_zip
+from .retention import prune_evaluated_candidates
 from .source import fmt_bytes
 
 log = logging.getLogger(__name__)
@@ -100,6 +101,17 @@ def build_filter_context(settings, conn):
             len(allowed_municipios),
         )
 
+    requested_limit = settings.filter_max_candidates_per_run
+    storage_limit = max(0, settings.raw_staging_max_rows)
+    effective_limit = requested_limit
+    if storage_limit and (requested_limit <= 0 or requested_limit > storage_limit):
+        effective_limit = storage_limit
+        log.info(
+            "[ARMAZENAMENTO] lote bruto limitado a %s candidatos (solicitado=%s)",
+            storage_limit,
+            requested_limit or "sem limite",
+        )
+
     return FilterContext(
         cnaes=settings.filter_cnaes,
         active_only=settings.filter_active_only,
@@ -112,7 +124,7 @@ def build_filter_context(settings, conn):
         min_activity_months=settings.filter_min_activity_months,
         min_population=settings.filter_min_population,
         headquarters_only=settings.filter_headquarters_only,
-        max_candidates=settings.filter_max_candidates_per_run,
+        max_candidates=effective_limit,
         allowed_municipios=allowed_municipios,
         excluded_cnpjs=excluded_cnpjs,
     )
@@ -130,6 +142,72 @@ def candidate_limit_reached(filter_ctx: FilterContext | None) -> bool:
         and filter_ctx.max_candidates > 0
         and len(filter_ctx.selected_cnpjs) >= filter_ctx.max_candidates
     )
+
+
+def seed_staged_candidates(conn, filter_ctx: FilterContext | None) -> int:
+    """Consome primeiro o staging deixado por execuções interrompidas."""
+    if not filter_ctx or not filter_ctx.enabled or filter_ctx.max_candidates <= 0:
+        return 0
+    remaining = filter_ctx.max_candidates - len(filter_ctx.selected_cnpjs)
+    if remaining <= 0:
+        return 0
+    rows = conn.execute(
+        """
+        SELECT e.cnpj,e.cnpj_basico
+        FROM cnpj.estabelecimentos e
+        WHERE NOT EXISTS (
+          SELECT 1 FROM cnpj.prospectos_qualificados p WHERE p.cnpj=e.cnpj
+        )
+          AND NOT EXISTS (
+            SELECT 1 FROM etl.candidate_decisions d WHERE d.cnpj=e.cnpj
+          )
+        ORDER BY e.cnpj
+        LIMIT %s
+        """,
+        (remaining,),
+    ).fetchall()
+    for cnpj, cnpj_basico in rows:
+        filter_ctx.selected_cnpjs.add(cnpj)
+        filter_ctx.matched_basics.add(cnpj_basico)
+    if rows:
+        log.info(
+            "[ARMAZENAMENTO] retomando %s candidatos brutos já armazenados; "
+            "nenhum novo estabelecimento será carregado antes de consumi-los",
+            len(rows),
+        )
+    return len(rows)
+
+
+def discard_unresolved_staging(conn, filter_ctx: FilterContext | None) -> int:
+    """Descarta o lote sem cadastro de empresa após varrer todos os ZIPs."""
+    if not filter_ctx:
+        return 0
+    unresolved = sorted(filter_ctx.matched_basics - filter_ctx.resolved_company_basics)
+    if not unresolved:
+        return 0
+    removed = conn.execute(
+        "DELETE FROM cnpj.estabelecimentos WHERE cnpj_basico=ANY(%s)",
+        (unresolved,),
+    ).rowcount
+    for table in ("socios", "simples", "empresas"):
+        conn.execute(
+            f"DELETE FROM cnpj.{table} WHERE cnpj_basico=ANY(%s)",
+            (unresolved,),
+        )
+    conn.execute(
+        """
+        UPDATE etl.funnel_metrics
+        SET rejected=rejected+%s,updated_at=now()
+        WHERE singleton=true
+        """,
+        (max(0, removed),),
+    )
+    conn.commit()
+    log.info(
+        "[ARMAZENAMENTO] descartados %s registros brutos sem cadastro complementar",
+        max(0, removed),
+    )
+    return max(0, removed)
 
 
 def run(
@@ -173,6 +251,10 @@ def run(
         if not db.acquire_lock(lock_conn):
             log.warning("Outra execução está ativa; encerrando.")
             return 0
+        # Finaliza resíduos de ciclos anteriores e usa o backlog bruto antes de
+        # abrir espaço para novos estabelecimentos da Receita.
+        prune_evaluated_candidates(lock_conn)
+        staged_backlog = seed_staged_candidates(lock_conn, filter_ctx)
         workflow_run_id = os.getenv("GITHUB_RUN_ID")
         run_id = lock_conn.execute(
             "INSERT INTO etl.runs (competence,status,files_total,workflow_run_id) "
@@ -267,7 +349,10 @@ def run(
                     and remote.file_type == "Estabelecimentos"
                     and int(existing[4] or 0) > 0
                 )
-                if unchanged and (not force or completed_establishment):
+                consume_backlog = bool(
+                    staged_backlog and remote.file_type in {"Simples", "Empresas"}
+                )
+                if unchanged and (not force or completed_establishment) and not consume_backlog:
                     log.info("Já processado: %s", remote.name)
                     continue
                 resume_row = 0
@@ -438,6 +523,7 @@ def run(
                             "a carga principal continuará",
                             remote.name,
                         )
+            discard_unresolved_staging(lock_conn, filter_ctx)
             lock_conn.execute(
                 "UPDATE etl.runs SET status='success',finished_at=now(),"
                 "files_processed=%s,rows_processed=%s WHERE id=%s",

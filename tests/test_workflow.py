@@ -18,6 +18,9 @@ def test_pipeline_chains_only_after_full_batch_processing():
     assert "-f continuous=true" in text
     assert "-f force_etl=true" in text
     assert "SUM(last_run_rows)" in text
+    assert "pending_raw" in text
+    assert "partial_files" in text
+    assert "RAW_STAGING_MAX_ROWS=25000" in text
 
 
 def test_pipeline_separates_cheap_entry_and_final_quality_thresholds():
@@ -34,7 +37,7 @@ def test_pipeline_separates_cheap_entry_and_final_quality_thresholds():
 def test_pipeline_publishes_email_first_and_bounds_deep_enrichment():
     text = WORKFLOW.read_text(encoding="utf-8")
 
-    assert "MARKETING_BATCH_SIZE=${{ inputs.load_batch_size || '100000' }}" in text
+    assert "MARKETING_BATCH_SIZE=${{ inputs.load_batch_size || '25000' }}" in text
     assert "MARKETING_EMAIL_WORKERS=64" in text
     assert "ENRICH_CANDIDATE_VIEW=cnpj.v_marketing_enrichment_candidates" in text
     assert "ENRICH_MAX_ROUNDS=1" in text

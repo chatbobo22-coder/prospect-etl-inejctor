@@ -80,7 +80,7 @@ on:
         description: "Candidatos brutos por ciclo antes da triagem"
         required: false
         type: string
-        default: "100000"
+        default: "25000"
       force_etl:
         description: "Reprocessa ZIPs da Receita (incrementa base, não apaga)"
         required: false
@@ -162,9 +162,10 @@ jobs:
           echo "FILTER_REQUIRE_EMAIL=${{ inputs.require_email != false }}" >> "$GITHUB_ENV"
           echo "FILTER_BLOCK_BACKOFFICE_EMAIL=${{ inputs.block_backoffice_email != false }}" >> "$GITHUB_ENV"
           echo "FILTER_HEADQUARTERS_ONLY=true" >> "$GITHUB_ENV"
-          echo "FILTER_MAX_CANDIDATES_PER_RUN=${{ inputs.load_batch_size || '100000' }}" >> "$GITHUB_ENV"
+          echo "FILTER_MAX_CANDIDATES_PER_RUN=${{ inputs.load_batch_size || '25000' }}" >> "$GITHUB_ENV"
+          echo "RAW_STAGING_MAX_ROWS=25000" >> "$GITHUB_ENV"
           echo "FAST_LEAD_MODE=true" >> "$GITHUB_ENV"
-          echo "MARKETING_BATCH_SIZE=${{ inputs.load_batch_size || '100000' }}" >> "$GITHUB_ENV"
+          echo "MARKETING_BATCH_SIZE=${{ inputs.load_batch_size || '25000' }}" >> "$GITHUB_ENV"
           echo "MARKETING_EMAIL_WORKERS=64" >> "$GITHUB_ENV"
           echo "MARKETING_MX_TIMEOUT=3" >> "$GITHUB_ENV"
           echo "FILTER_MIN_ACTIVITY_MONTHS=${{ inputs.min_activity_months || '12' }}" >> "$GITHUB_ENV"
@@ -310,7 +311,7 @@ jobs:
         id: next_batch
         if: ${{ github.event_name == 'schedule' || inputs.continuous == true }}
         env:
-          LOAD_BATCH_SIZE: ${{ inputs.load_batch_size || '100000' }}
+          LOAD_BATCH_SIZE: ${{ inputs.load_batch_size || '25000' }}
         run: |
           python - <<'PY'
           import os
@@ -326,10 +327,23 @@ jobs:
                   "WHERE competence=%s AND file_type='Estabelecimentos'",
                   (competence,),
               ).fetchone()[0]
-          should_continue = int(loaded) >= batch_size
+              pending_raw = conn.execute(
+                  "SELECT COUNT(*) FROM cnpj.estabelecimentos e "
+                  "WHERE NOT EXISTS (SELECT 1 FROM cnpj.prospectos_qualificados p WHERE p.cnpj=e.cnpj)"
+              ).fetchone()[0]
+              partial_files = conn.execute(
+                  "SELECT COUNT(*) FROM etl.files WHERE competence=%s "
+                  "AND file_type='Estabelecimentos' AND status IN ('pending','partial','processing')",
+                  (competence,),
+              ).fetchone()[0]
+          should_continue = bool(pending_raw or partial_files or int(loaded) >= batch_size)
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"continue={'true' if should_continue else 'false'}\n")
-          print(f"lote_estabelecimentos={loaded} limite={batch_size} continuar={should_continue}")
+          print(
+              f"lote_estabelecimentos={loaded} limite={batch_size} "
+              f"brutos_pendentes={pending_raw} arquivos_pendentes={partial_files} "
+              f"continuar={should_continue}"
+          )
           PY
 
       - name: Queue next sequential batch after this one is complete
@@ -352,7 +366,7 @@ jobs:
             -f exclude_mei="${{ inputs.exclude_mei != false }}" \
             -f min_confidence_score="${{ inputs.min_confidence_score || '70' }}" \
             -f min_lead_score="${{ inputs.min_lead_score || '70' }}" \
-            -f load_batch_size="${{ inputs.load_batch_size || '100000' }}" \
+            -f load_batch_size="${{ inputs.load_batch_size || '25000' }}" \
             -f force_etl=true \
             -f continuous=true \
             -f force_enrich=false \

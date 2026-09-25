@@ -12,6 +12,7 @@ def _reload_config(monkeypatch, **env):
         "FILTER_REQUIRE_NOME_FANTASIA",
         "FILTER_REQUIRE_TELEFONE",
         "FILTER_MAX_CANDIDATES_PER_RUN",
+        "RAW_STAGING_MAX_ROWS",
     ):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
@@ -62,3 +63,4 @@ def test_national_and_broad_contact_defaults(monkeypatch):
     assert settings.filter_require_nome_fantasia is False
     assert settings.filter_require_telefone is False
     assert settings.filter_max_candidates_per_run == 100000
+    assert settings.raw_staging_max_rows == 25000

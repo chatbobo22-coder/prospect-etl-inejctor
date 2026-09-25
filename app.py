@@ -41,7 +41,7 @@ class InjectorConfig(BaseModel):
     exclude_mei: bool = True
     min_confidence_score: int = Field(default=70, ge=0, le=100)
     min_lead_score: int = Field(default=70, ge=0, le=100)
-    load_batch_size: int = Field(default=100000, ge=1000, le=250000)
+    load_batch_size: int = Field(default=25000, ge=1000, le=250000)
     force_etl: bool = True
     continuous: bool = True
     force_enrich: bool = False
@@ -738,7 +738,7 @@ def injector_config():
             in {"1", "true", "yes", "on"},
             "min_confidence_score": int(os.getenv("PROSPECT_MIN_CONFIDENCE_SCORE", "70")),
             "min_lead_score": int(os.getenv("PROSPECT_MIN_LEAD_SCORE", "70")),
-            "load_batch_size": int(os.getenv("LOAD_BATCH_SIZE", "100000")),
+            "load_batch_size": int(os.getenv("LOAD_BATCH_SIZE", "25000")),
             "force_etl": True,
             "continuous": True,
             "force_enrich": False,
